@@ -19,7 +19,7 @@ class AgentPlanner:
         """Main entry point processing observation dict and returning action payload."""
         state = FarmState.from_obs(obs)
 
-        # Market Queue Planning
+        # Utility-based Market Queue Planning
         market_actions = self.market_planner.plan_orders(state)
 
         # Farmer Unit Planning

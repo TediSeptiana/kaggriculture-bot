@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 Pos = Tuple[int, int]
@@ -17,14 +17,57 @@ class CropSpec:
     first_yield_day: int
     max_yield_day: int
     crop_type: str
+    base_yield: float
+    max_yield: float
+    product_name: str
 
 
 CROP_SPECS: Dict[str, CropSpec] = {
-    "WHEAT": CropSpec(seed_cost=10, first_yield_day=2, max_yield_day=4, crop_type="one_time"),
-    "CARROT": CropSpec(seed_cost=20, first_yield_day=2, max_yield_day=3, crop_type="one_time"),
-    "TOMATO": CropSpec(seed_cost=50, first_yield_day=8, max_yield_day=11, crop_type="ongoing"),
-    "STRAWBERRY": CropSpec(seed_cost=100, first_yield_day=10, max_yield_day=16, crop_type="ongoing"),
-    "MELON": CropSpec(seed_cost=80, first_yield_day=10, max_yield_day=10, crop_type="one_time"),
+    "WHEAT": CropSpec(
+        seed_cost=10,
+        first_yield_day=2,
+        max_yield_day=4,
+        crop_type="one_time",
+        base_yield=4.0,
+        max_yield=6.0,
+        product_name="WHEAT",
+    ),
+    "CARROT": CropSpec(
+        seed_cost=20,
+        first_yield_day=2,
+        max_yield_day=3,
+        crop_type="one_time",
+        base_yield=3.0,
+        max_yield=4.0,
+        product_name="CARROT",
+    ),
+    "TOMATO": CropSpec(
+        seed_cost=50,
+        first_yield_day=8,
+        max_yield_day=11,
+        crop_type="ongoing",
+        base_yield=4.0,
+        max_yield=4.0,
+        product_name="TOMATO",
+    ),
+    "STRAWBERRY": CropSpec(
+        seed_cost=100,
+        first_yield_day=10,
+        max_yield_day=16,
+        crop_type="ongoing",
+        base_yield=4.0,
+        max_yield=4.0,
+        product_name="STRAWBERRY",
+    ),
+    "MELON": CropSpec(
+        seed_cost=80,
+        first_yield_day=10,
+        max_yield_day=10,
+        crop_type="one_time",
+        base_yield=6.0,
+        max_yield=6.0,
+        product_name="MELON",
+    ),
 }
 
 SHED_LOCATIONS: Tuple[Pos, ...] = ((4, 4), (5, 4), (4, 5), (5, 5))
