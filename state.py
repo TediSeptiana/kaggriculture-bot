@@ -1,81 +1,43 @@
-"""Domain state representations and helper models for Kaggriculture state observation."""
+"""Domain state and static crop specifications for the farm agent."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 Pos = Tuple[int, int]
-Tile = Optional[Dict[str, Any]]
+Tile = Dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
 class CropSpec:
-    """Crop economic and lifecycle specification."""
+    """Static lifecycle data for a supported crop."""
 
-    seed_cost: int
+    seed_cost: float
     first_yield_day: int
     max_yield_day: int
-    crop_type: str
-    base_yield: float
-    max_yield: float
     product_name: str
+    base_yield: int = 1
+    max_yield: int = 1
+    crop_type: str = "one_time"
 
 
+# The first strategy deliberately supports wheat only.
 CROP_SPECS: Dict[str, CropSpec] = {
     "WHEAT": CropSpec(
-        seed_cost=10,
+        seed_cost=10.0,
         first_yield_day=2,
         max_yield_day=4,
-        crop_type="one_time",
-        base_yield=4.0,
-        max_yield=6.0,
         product_name="WHEAT",
-    ),
-    "CARROT": CropSpec(
-        seed_cost=20,
-        first_yield_day=2,
-        max_yield_day=3,
-        crop_type="one_time",
-        base_yield=3.0,
-        max_yield=4.0,
-        product_name="CARROT",
-    ),
-    "TOMATO": CropSpec(
-        seed_cost=50,
-        first_yield_day=8,
-        max_yield_day=11,
-        crop_type="ongoing",
-        base_yield=4.0,
-        max_yield=4.0,
-        product_name="TOMATO",
-    ),
-    "STRAWBERRY": CropSpec(
-        seed_cost=100,
-        first_yield_day=10,
-        max_yield_day=16,
-        crop_type="ongoing",
-        base_yield=4.0,
-        max_yield=4.0,
-        product_name="STRAWBERRY",
-    ),
-    "MELON": CropSpec(
-        seed_cost=80,
-        first_yield_day=10,
-        max_yield_day=10,
-        crop_type="one_time",
-        base_yield=6.0,
-        max_yield=6.0,
-        product_name="MELON",
+        base_yield=1,
+        max_yield=3,
     ),
 }
-
-SHED_LOCATIONS: Tuple[Pos, ...] = ((4, 4), (5, 4), (4, 5), (5, 5))
 
 
 @dataclass(slots=True)
 class FarmState:
-    """Domain model wrapper around the observation state payload."""
+    """Normalized farm observation used by planning modules."""
 
     player: int
     day: int
@@ -85,66 +47,63 @@ class FarmState:
     farmer_pos: Pos
     hands_pos: List[Pos]
     hires_today: int
-    tiles: List[List[Tile]]
+    tiles: List[List[Any]]
     shed: Dict[str, int]
     seeds: Dict[str, int]
     inventories: List[List[Dict[str, Any]]]
     market_prices: Dict[str, float]
-    market_inventory: Dict[str, int]
 
     @classmethod
-    def from_obs(cls, obs: Dict[str, Any]) -> FarmState:
-        """Parses a raw observation dictionary into a typed FarmState instance."""
-        player = int(obs["player"])
-        farm = obs["farms"][player]
-        private = obs.get("private", {})
-        market = obs.get("market", {})
+    def from_obs(cls, obs: Dict[str, Any]) -> "FarmState":
+        """Build a normalized state from a Kaggle observation payload."""
+        farm = (obs.get("farms") or [{}])[0]
+        private = obs.get("private") or {}
+        market = obs.get("market") or {}
 
-        raw_farmer = farm.get("farmer", [0, 0])
-        farmer_pos: Pos = (int(raw_farmer[0]), int(raw_farmer[1]))
+        def position(value: Any, default: Pos = (0, 0)) -> Pos:
+            if isinstance(value, (list, tuple)) and len(value) >= 2:
+                return int(value[0]), int(value[1])
+            return default
 
-        hands_pos: List[Pos] = [
-            (int(h[0]), int(h[1])) for h in farm.get("hands", [])
-        ]
+        raw_inventories = private.get("inventories") or []
+        inventories = [item if isinstance(item, list) else [] for item in raw_inventories]
 
         return cls(
-            player=player,
+            player=int(obs.get("player", 0)),
             day=int(obs.get("day", 0)),
             hour=int(obs.get("hour", 0)),
             money=float(farm.get("money", 0.0)),
-            unlocked_quadrants=list(farm.get("unlocked_quadrants", ["NW"])),
-            farmer_pos=farmer_pos,
-            hands_pos=hands_pos,
+            unlocked_quadrants=list(farm.get("unlocked_quadrants") or []),
+            farmer_pos=position(farm.get("farmer")),
+            hands_pos=[position(hand) for hand in (farm.get("hands") or [])],
             hires_today=int(farm.get("hires_today", 0)),
-            tiles=farm.get("tiles", []),
-            shed=dict(private.get("shed", {})),
-            seeds=dict(private.get("seeds", {})),
-            inventories=list(private.get("inventories", [[]])),
-            market_prices=dict(market.get("prices", {})),
-            market_inventory=dict(market.get("inventory", {})),
+            tiles=list(farm.get("tiles") or []),
+            shed=dict(private.get("shed") or {}),
+            seeds={
+                "WHEAT": int((private.get("seeds") or {}).get("WHEAT", 0))
+            },
+            inventories=inventories,
+            market_prices={
+                str(name): float(price)
+                for name, price in (market.get("prices") or {}).items()
+            },
         )
-
-    def is_shed_adjacent(self, pos: Pos) -> bool:
-        """Checks if coordinate matches one of the four center shed tiles."""
-        return pos in SHED_LOCATIONS
 
     @staticmethod
     def get_quadrant(x: int, y: int) -> str:
-        """Translates 2D spatial coordinate into quadrant identifier."""
-        if x < 5 and y < 5:
-            return "NW"
-        if x >= 5 and y < 5:
-            return "NE"
-        if x < 5 and y >= 5:
-            return "SW"
-        return "SE"
+        """Return the quadrant name for a 10x10 farm grid."""
+        return ("N" if y < 5 else "S") + ("W" if x < 5 else "E")
 
     def get_unlocked_tiles(self) -> List[Pos]:
-        """Returns coordinate list for all unlocked tiles."""
-        unlocked_set = set(self.unlocked_quadrants)
-        return [
-            (x, y)
-            for y in range(10)
-            for x in range(10)
-            if self.get_quadrant(x, y) in unlocked_set
-        ]
+        """Return coordinates inside unlocked quadrants."""
+        positions: List[Pos] = []
+        for y, row in enumerate(self.tiles):
+            for x in range(len(row)):
+                if self.get_quadrant(x, y) in self.unlocked_quadrants:
+                    positions.append((x, y))
+        return positions
+
+    @staticmethod
+    def is_shed_adjacent(pos: Pos) -> bool:
+        """Whether a unit is on or next to the shed at (4, 4)."""
+        return abs(pos[0] - 4) + abs(pos[1] - 4) <= 1
