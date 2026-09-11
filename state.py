@@ -56,7 +56,9 @@ class FarmState:
     @classmethod
     def from_obs(cls, obs: Dict[str, Any]) -> "FarmState":
         """Build a normalized state from a Kaggle observation payload."""
-        farm = (obs.get("farms") or [{}])[0]
+        player = int(obs.get("player", 0))
+        farms = obs.get("farms") or []
+        farm = farms[player] if 0 <= player < len(farms) else {}
         private = obs.get("private") or {}
         market = obs.get("market") or {}
 
@@ -69,7 +71,7 @@ class FarmState:
         inventories = [item if isinstance(item, list) else [] for item in raw_inventories]
 
         return cls(
-            player=int(obs.get("player", 0)),
+            player=player,
             day=int(obs.get("day", 0)),
             hour=int(obs.get("hour", 0)),
             money=float(farm.get("money", 0.0)),
