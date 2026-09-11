@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict
-from kaggriculture.planner import AgentPlanner
+from planner import AgentPlanner
 
 _planner_instance = AgentPlanner()
 

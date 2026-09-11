@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, List, Union
-from kaggriculture.state import FarmState
+from state import FarmState
 
 MarketOrder = List[Union[str, int]]
 

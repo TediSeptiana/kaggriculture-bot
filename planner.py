@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
-from kaggriculture.market import MarketPlanner
-from kaggriculture.state import FarmState
-from kaggriculture.worker import WorkerPlanner
+from market import MarketPlanner
+from state import FarmState
+from worker import WorkerPlanner
 
 
 class AgentPlanner:
