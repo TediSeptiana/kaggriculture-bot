@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from kaggriculture.state import FarmState
-from kaggriculture.worker import WorkerPlanner
+from state import FarmState
+from worker import WorkerPlanner
 
 
 def test_worker_drop_at_shed(dummy_obs: dict) -> None:

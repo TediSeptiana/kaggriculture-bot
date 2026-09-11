@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from kaggriculture.state import FarmState
+from state import FarmState
 
 
 @pytest.fixture

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from kaggriculture.market import MarketPlanner
-from kaggriculture.state import FarmState
+from market import MarketPlanner
+from state import FarmState
 
 
 def test_market_buy_land(dummy_obs: dict) -> None:
