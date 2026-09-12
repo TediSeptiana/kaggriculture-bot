@@ -74,6 +74,61 @@ class HiringManager:
         """Calculates Manhattan distance between two tile coordinates."""
         return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
 
+    # ------------------------------------------------------------------
+    # FIX 2 helper: value of watering on a single day.
+    # Previously: loss_avoidance = base_yield * price (massively over-valued)
+    # Now:        loss_avoidance = (yield_gain_per_day) * price
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _water_value_per_day(spec: Optional[CropSpec], price: float) -> float:
+        """Monetary value of one additional day of growth for the given crop.
+
+        This is a conservative estimate: watering preserves one day of growth
+        (the marginal yield gained per day), not the entire base yield.
+        """
+        if spec is None:
+            return 1.0 * price
+
+        growth_days = max(1, spec.max_yield_day - spec.first_yield_day)
+        yield_gain_per_day = max(0.0, float(spec.max_yield - spec.base_yield)) / growth_days
+
+        # Floor at 1 unit/day so watering still has non-zero value for slow crops
+        yield_gain_per_day = max(1.0, yield_gain_per_day)
+        return yield_gain_per_day * price
+
+    # ------------------------------------------------------------------
+    # FIX A helper: projected yield at a future age, assuming daily watering.
+    # Previously: harvest_val used yield_units (flat across the horizon).
+    # Now:        projected_yield grows linearly from base_yield to max_yield
+    #             between first_yield_day and max_yield_day.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _projected_yield(
+        spec: Optional[CropSpec],
+        simulated_age: int,
+        current_yield_units: int,
+    ) -> float:
+        """Estimate harvestable yield at a simulated crop age."""
+        if spec is None:
+            return float(max(current_yield_units, 2))
+
+        # Before the crop is mature, use the current yield_units as baseline
+        if simulated_age < spec.first_yield_day:
+            return float(max(current_yield_units, spec.base_yield))
+
+        # Growth window: linear interpolation from base_yield to max_yield
+        if spec.max_yield_day > spec.first_yield_day:
+            days_in_window = max(1, spec.max_yield_day - spec.first_yield_day)
+            days_elapsed = max(0, simulated_age - spec.first_yield_day)
+            growth_per_day = (spec.max_yield - spec.base_yield) / float(days_in_window)
+            projected = spec.base_yield + growth_per_day * days_elapsed
+            projected = min(float(projected), float(spec.max_yield))
+        else:
+            projected = float(spec.max_yield)
+
+        # Never below what's already on the plant
+        return max(projected, float(current_yield_units))
+
     def _extract_horizon_tasks(self, state: FarmState) -> List[EconomicTask]:
         """Extracts discrete, deduplicated tasks across the current day and planning horizon H."""
         tasks: List[EconomicTask] = []
@@ -141,6 +196,9 @@ class HiringManager:
                     max_yield_day = spec.max_yield_day if spec else 4
                     is_one_time = spec.crop_type == "one_time" if spec else True
 
+                    # FIX 2: compute daily water value once
+                    water_value_per_day = self._water_value_per_day(spec, price)
+
                     harvest_scheduled = False
 
                     # Project over multi-day horizon H
@@ -153,7 +211,13 @@ class HiringManager:
                                 # Prevent multi-counting single harvest event
                                 continue
 
-                            harvest_val = float(max(yield_units, spec.base_yield if spec else 2) * price)
+                            # ----------------------------------------------------------
+                            # FIX A: use projected yield (grows with simulated_age)
+                            # instead of flat current yield_units.
+                            # ----------------------------------------------------------
+                            projected_yield = self._projected_yield(spec, simulated_age, yield_units)
+                            harvest_val = float(projected_yield * price)
+
                             remaining_days = max(1, max_yield_day - simulated_age)
                             slack_turns = max(1, remaining_days * 24)
 
@@ -171,8 +235,7 @@ class HiringManager:
 
                         # 2. WATER Projection (Assigned strictly to its specific day_offset)
                         elif day_h == 0 and not tile.get("watered_today", False):
-                            base_y = float(spec.base_yield) if spec else 1.0
-                            loss_avoidance = base_y * price
+                            # FIX 2: use per-day growth value instead of base_yield * price
                             slack_turns = max(1, 24 - state.hour)
 
                             tasks.append(
@@ -180,22 +243,20 @@ class HiringManager:
                                     task_id=f"water_{tile_key}_d0",
                                     task_type="WATER",
                                     position=pos,
-                                    economic_value=loss_avoidance,
+                                    economic_value=water_value_per_day,
                                     slack_turns=slack_turns,
                                     day_offset=0,
                                 )
                             )
                         elif day_h > 0 and simulated_age < first_yield:
                             # Mandatory future day watering
-                            base_y = float(spec.base_yield) if spec else 1.0
-                            loss_avoidance = base_y * price
-
+                            # FIX 2: use per-day growth value instead of base_yield * price
                             tasks.append(
                                 EconomicTask(
                                     task_id=f"water_{tile_key}_d{day_h}",
                                     task_type="WATER",
                                     position=pos,
-                                    economic_value=loss_avoidance,
+                                    economic_value=water_value_per_day,
                                     slack_turns=24,
                                     day_offset=day_h,
                                 )
@@ -245,16 +306,31 @@ class HiringManager:
     def calculate_forward_expected_value(
         self, num_workers: int, state: FarmState, tasks: Sequence[EconomicTask]
     ) -> float:
-        """Computes EV_{t:t+H}(N) using day-budgeted discrete assignment across horizon H."""
+        """Computes EV_{t:t+H}(N) using day-budgeted discrete assignment across horizon H.
+
+        NOTE: Workers return to their spawn tile at the start of every day.
+        This matches the game's behavior: a worker does NOT carry over their
+        end-of-day position into the next morning. Fixing this prevents
+        over-estimating EV on day_h >= 1.
+        """
         if num_workers <= 0 or not tasks:
             return 0.0
 
         workers = self._get_initial_worker_states(state, num_workers)
+
+        # ---- capture each worker's spawn position once, so we can
+        #      restore it at the start of every simulated day.
+        spawn_positions: List[Pos] = [w.current_pos for w in workers]
+
         completed_task_ids: Set[str] = set()
         total_realized_value = 0.0
 
         # Simulate day-by-day execution to enforce strictly 24 actions per worker per day
         for day_h in range(self.PLANNING_HORIZON_DAYS):
+            # ---- every worker teleports back to their spawn at day start ----
+            for idx, w in enumerate(workers):
+                w.current_pos = spawn_positions[idx]
+
             # Filter tasks scheduled specifically for this day
             day_tasks = [t for t in tasks if t.day_offset == day_h and t.task_id not in completed_task_ids]
             if not day_tasks:
@@ -328,12 +404,19 @@ class HiringManager:
             next_hire_index = simulated_hires + 1
             next_worker_count = simulated_workers + 1
 
-            hire_cost = get_fibonacci_cost(next_hire_index, self.farm_hand_cost_mult)
+            # ------------------------------------------------------------------
+            # FIX 1: hire cost was previously counted as 1 day only, but
+            # EV_{t:t+H}(N) covers PLANNING_HORIZON_DAYS days. Multiply hire
+            # cost by the horizon so we compare apples-to-apples.
+            # ------------------------------------------------------------------
+            daily_hire_cost = get_fibonacci_cost(next_hire_index, self.farm_hand_cost_mult)
+            total_hire_cost = daily_hire_cost * float(self.PLANNING_HORIZON_DAYS)
+
             ev_next = self.calculate_forward_expected_value(next_worker_count, state, field_tasks)
 
             # Forward MDEV_n = EV_{t:t+H}(N+1) - EV_{t:t+H}(N)
             marginal_economic_value = ev_next - ev_previous
-            required_threshold = hire_cost * (1.0 + self.safety_margin_ratio)
+            required_threshold = total_hire_cost * (1.0 + self.safety_margin_ratio)
 
             if marginal_economic_value > required_threshold:
                 orders.append(["HIRE"])
