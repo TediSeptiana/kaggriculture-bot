@@ -46,6 +46,13 @@ CROP_SPECS_AUDIT: Dict[str, CropSpecAudit] = {
 
 _DEFAULT_CROP_SPEC = CropSpecAudit(10.0, 2, 4, "WHEAT")
 
+# FIX: animal buy prices (seed_cost used as "acquisition cost" placeholder)
+ANIMAL_BUY_PRICES: Dict[str, float] = {
+    "GOOSE": 300.0,
+    "COW": 400.0,
+    "SHEEP": 500.0,
+}
+
 
 # ============================================================================
 # Ledger Dataclasses
@@ -63,19 +70,16 @@ class CropPerformanceLedger:
 
     @property
     def gross_profit(self) -> Money:
-        """Calculates Gross Profit = Revenue - Direct Seed Cost."""
         return self.sales_revenue - self.seed_expenditure
 
     @property
     def roi_percentage(self) -> float:
-        """Calculates Return on Investment (ROI%)."""
         if self.seed_expenditure <= 0.0:
             return 0.0
         return (self.gross_profit / self.seed_expenditure) * 100.0
 
     @property
     def avg_sell_price(self) -> Money:
-        """Calculates average realized price per unit sold."""
         if self.units_sold <= 0:
             return 0.0
         return self.sales_revenue / float(self.units_sold)
@@ -91,6 +95,7 @@ class DailyFinancialSnapshot:
     seed_cogs: Money = 0.0
     labor_opex: Money = 0.0
     land_capex: Money = 0.0
+    animal_capex: Money = 0.0            # FIX: track animal purchases separately
     closing_cash: Money = 0.0
     net_wealth: Money = 0.0
     shed_items_count: ItemCount = 0
@@ -109,6 +114,7 @@ class FinancialLedger:
     total_seed_cogs: Money = 0.0
     total_labor_opex: Money = 0.0
     total_land_capex: Money = 0.0
+    total_animal_capex: Money = 0.0      # FIX: track animal purchases
     unsold_inventory_value: Money = 0.0
     unsold_seed_value: Money = 0.0
     crop_breakdown: Dict[str, CropPerformanceLedger] = field(default_factory=dict)
@@ -127,8 +133,11 @@ class FinancialLedger:
 class TransactionalAuditor:
     """Engine that performs transaction-level auditing on Kaggle Environment replays."""
 
-    # Fibonacci pricing multiplier base for HIRE (kept as-is to preserve original audit output)
-    _HIRE_BASE_COST: Money = 100.0
+    # FIX: hire base cost is farmHandCostMult, default = 1 (NOT 100).
+    _HIRE_BASE_COST: Money = 1.0
+
+    # Fibonacci sequence used by the game's HIRE pricing.
+    _FIB: List[int] = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144]
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
@@ -140,7 +149,6 @@ class TransactionalAuditor:
 
     @classmethod
     def create_unique_benchmark_dir(cls, base_dir: str = "logg") -> Path:
-        """Creates a uniquely named directory for audit outputs."""
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         unique_hash = hashlib.md5(f"{time.time()}".encode()).hexdigest()[:8]
         dir_name = f"benchmark_{timestamp}_{unique_hash}"
@@ -155,7 +163,6 @@ class TransactionalAuditor:
     def audit_environment(
         self, env: Any, agent_index: int, match_number: int
     ) -> FinancialLedger:
-        """Parses exact step transactions to compile an accurate Financial Ledger."""
         ledger = FinancialLedger(match_id=match_number, agent_index=agent_index)
 
         state = _AuditState(
@@ -192,7 +199,7 @@ class TransactionalAuditor:
             current_seeds = dict(private.get("seeds", {}))
             current_shed = dict(private.get("shed", {}))
 
-            # --- Day rollover: flush previous snapshot and start a new one ---
+            # --- Day rollover ---
             if current_day != state.snapshot.day:
                 state.snapshot.closing_cash = state.prev_cash
                 state.snapshot.net_wealth = (
@@ -205,12 +212,15 @@ class TransactionalAuditor:
                     day=current_day, opening_cash=current_cash
                 )
 
-            # --- Process explicit market orders for this turn ---
+            # --- Market orders ---
             market_orders = (
                 action_data.get("market", [])
                 if isinstance(action_data, dict)
                 else []
             )
+
+            # FIX: hires_today default = 0 (not 1). It counts hires ALREADY made.
+            hires_today = int(my_farm.get("hires_today", 0))
 
             for order in market_orders:
                 self._process_market_order(
@@ -219,10 +229,9 @@ class TransactionalAuditor:
                     snapshot=state.snapshot,
                     market_prices=market_prices,
                     unlocked_quads=unlocked_quads,
-                    hires_today=int(my_farm.get("hires_today", 1)),
+                    hires_today=hires_today,
                 )
 
-            # --- Fallback delta tracking if market actions are not in step log ---
             if not market_orders:
                 self._apply_fallback_delta(
                     ledger=ledger,
@@ -233,18 +242,16 @@ class TransactionalAuditor:
                     prev_quads_count=state.prev_quads_count,
                 )
 
-            # --- Advance state ---
             state.prev_cash = current_cash
             state.prev_quads_count = unlocked_quads
             state.prev_seeds_count = current_seeds
             state.prev_shed_count = current_shed
 
-        # --- Final day snapshot ---
         self._finalize_final_snapshot(env, ledger, state, agent_index)
         return ledger
 
     # ------------------------------------------------------------------ #
-    # Order processing helpers
+    # Order processing
     # ------------------------------------------------------------------ #
 
     def _process_market_order(
@@ -256,7 +263,6 @@ class TransactionalAuditor:
         unlocked_quads: int,
         hires_today: int,
     ) -> None:
-        """Dispatch a single market order to the appropriate handler."""
         if not isinstance(order, list) or not order:
             return
 
@@ -270,6 +276,12 @@ class TransactionalAuditor:
             self._handle_buy_land(ledger, snapshot, unlocked_quads)
         elif order_type == "HIRE":
             self._handle_hire(ledger, snapshot, hires_today)
+        elif order_type == "BUY_ANIMAL" and len(order) >= 3:
+            # FIX: track animal purchases
+            self._handle_buy_animal(order, ledger, snapshot)
+        elif order_type == "BUY_PRODUCT" and len(order) >= 3:
+            # FIX: WHEAT/FERTILIZER buy from market
+            self._handle_buy_product(order, ledger, snapshot, market_prices)
 
     def _handle_buy_seed(
         self,
@@ -304,7 +316,14 @@ class TransactionalAuditor:
         ledger.total_gross_revenue += revenue
         snapshot.sales_revenue += revenue
 
+        # Track under crop breakdown if it's a crop product
         if item in ledger.crop_breakdown:
+            ledger.crop_breakdown[item].units_sold += qty
+            ledger.crop_breakdown[item].sales_revenue += revenue
+        # FIX: track animal products too (EGG, MILK, WOOL)
+        elif item in ("EGG", "MILK", "WOOL"):
+            if item not in ledger.crop_breakdown:
+                ledger.crop_breakdown[item] = CropPerformanceLedger(crop_name=item)
             ledger.crop_breakdown[item].units_sold += qty
             ledger.crop_breakdown[item].sales_revenue += revenue
 
@@ -314,12 +333,19 @@ class TransactionalAuditor:
         snapshot: DailyFinancialSnapshot,
         unlocked_quads: int,
     ) -> None:
-        # NOTE: preserved as-is from original implementation.
-        land_cost = (
-            1000.0
-            if unlocked_quads == 2
-            else (2000.0 if unlocked_quads == 3 else 4000.0)
-        )
+        # FIX: cost depends on how many quadrants you ALREADY own.
+        #   own 1 -> buying 2nd -> $1,000
+        #   own 2 -> buying 3rd -> $2,000
+        #   own 3 -> buying 4th -> $4,000
+        if unlocked_quads == 1:
+            land_cost = 1000.0
+        elif unlocked_quads == 2:
+            land_cost = 2000.0
+        elif unlocked_quads == 3:
+            land_cost = 4000.0
+        else:
+            land_cost = 0.0
+
         ledger.total_land_capex += land_cost
         snapshot.land_capex += land_cost
 
@@ -329,11 +355,42 @@ class TransactionalAuditor:
         snapshot: DailyFinancialSnapshot,
         hires_today: int,
     ) -> None:
-        # NOTE: preserved as-is from original implementation.
-        from market import get_fibonacci_cost
-        hire_cost = get_fibonacci_cost(hires_today, self._HIRE_BASE_COST)
+        # FIX: no external import; use local fib lookup.
+        #   fib index = hires_today (0-based)
+        fib_index = min(hires_today, len(self._FIB) - 1)
+        hire_cost = self._HIRE_BASE_COST * self._FIB[fib_index]
         ledger.total_labor_opex += hire_cost
         snapshot.labor_opex += hire_cost
+
+    def _handle_buy_animal(
+        self,
+        order: list,
+        ledger: FinancialLedger,
+        snapshot: DailyFinancialSnapshot,
+    ) -> None:
+        """FIX: new handler for BUY_ANIMAL orders."""
+        animal = str(order[1]).upper()
+        qty = int(order[2])
+        unit = ANIMAL_BUY_PRICES.get(animal, 0.0)
+        cost = unit * qty
+        ledger.total_animal_capex += cost
+        snapshot.animal_capex += cost
+
+    def _handle_buy_product(
+        self,
+        order: list,
+        ledger: FinancialLedger,
+        snapshot: DailyFinancialSnapshot,
+        market_prices: Dict[str, float],
+    ) -> None:
+        """FIX: new handler for BUY_PRODUCT (WHEAT, FERTILIZER)."""
+        item = str(order[1]).upper()
+        qty = int(order[2])
+        unit = float(market_prices.get(item, 0.0))
+        cost = unit * qty
+        # Count as seed COGS bucket for simplicity (or add a new bucket)
+        ledger.total_seed_cogs += cost
+        snapshot.seed_cogs += cost
 
     def _apply_fallback_delta(
         self,
@@ -354,7 +411,7 @@ class TransactionalAuditor:
             snapshot.seed_cogs += abs(cash_delta)
 
     # ------------------------------------------------------------------ #
-    # Final snapshot finalization
+    # Final snapshot
     # ------------------------------------------------------------------ #
 
     def _finalize_final_snapshot(
@@ -396,10 +453,15 @@ class TransactionalAuditor:
     ) -> Money:
         total_val = 0.0
         for item, count in shed.items():
-            fallback_spec = CROP_SPECS_AUDIT.get(item, _DEFAULT_CROP_SPEC)
-            price = float(
-                market_prices.get(item, fallback_spec.seed_cost * 2)
-            )
+            if item in ANIMAL_BUY_PRICES:
+                # FIX: animals valued at their buy price
+                price = ANIMAL_BUY_PRICES[item]
+            else:
+                # Fallback for crops/products uses market price, else seed*2
+                fallback_spec = CROP_SPECS_AUDIT.get(item, _DEFAULT_CROP_SPEC)
+                price = float(
+                    market_prices.get(item, fallback_spec.seed_cost * 2)
+                )
             total_val += price * count
         return total_val
 
@@ -417,7 +479,6 @@ class TransactionalAuditor:
     def generate_match_report(
         self, ledger: FinancialLedger, opponent_name: str
     ) -> Path:
-        """Writes audit statement with cash flow and crop breakdown to match_XX.txt."""
         file_path = self.output_dir / f"match_{ledger.match_id:02d}.txt"
 
         gross_profit = ledger.total_gross_revenue - ledger.total_seed_cogs
@@ -450,7 +511,7 @@ class TransactionalAuditor:
 
         return file_path
 
-    # ---- Report section builders -------------------------------------- #
+    # ---- Report sections --------------------------------------------- #
 
     def _build_header(
         self, ledger: FinancialLedger, opponent_name: str
@@ -470,6 +531,8 @@ class TransactionalAuditor:
         gross_profit: Money,
         operating_cash_flow: Money,
     ) -> List[str]:
+        # FIX: include animal CapEx in the breakdown
+        total_capex = ledger.total_land_capex + ledger.total_animal_capex
         return [
             "1. STATEMENT OF CASH FLOWS & INCOME STATEMENT (LAPORAN ARUS KAS / LABA RUGI)",
             "------------------------------------------------------------------------------------------",
@@ -481,7 +544,9 @@ class TransactionalAuditor:
             f"  (-) Labor OpEx (Biaya HIRE Farm Hand)   : ${ledger.total_labor_opex:14,.2f}",
             "  ----------------------------------------------------------------------------------------",
             f"  (=) OPERATING CASH FLOW (CFO)           : ${operating_cash_flow:14,.2f}",
-            f"  (-) CapEx (BUY_LAND Investment)         : ${ledger.total_land_capex:14,.2f}",
+            f"  (-) CapEx (BUY_LAND + BUY_ANIMAL)       : ${total_capex:14,.2f}",
+            f"      - Land  : ${ledger.total_land_capex:14,.2f}",
+            f"      - Animal: ${ledger.total_animal_capex:14,.2f}",
             "  ----------------------------------------------------------------------------------------",
             f"  (=) CLOSING CASH BALANCE (Kas Akhir)    : ${ledger.ending_cash:14,.2f}",
             "",
@@ -566,13 +631,14 @@ class TransactionalAuditor:
             "",
             "5. DAILY CASH FLOW & WEALTH PROGRESSION MATRIX",
             "------------------------------------------------------------------------------------------",
-            "  Day | Open Cash   | Sales ($)  | Seed COGS  | Labor OpEx | Land CapEx | Close Cash  | Net Wealth",
+            "  Day | Open Cash   | Sales ($)  | Seed COGS  | Labor OpEx | Land CapEx | Animal CapEx | Close Cash  | Net Wealth",
             "  ----------------------------------------------------------------------------------------",
         ]
         for snap in ledger.daily_snapshots:
             lines.append(
                 f"  D{snap.day:02d} | ${snap.opening_cash:>9,.2f} | ${snap.sales_revenue:>9,.2f} | "
                 f"${snap.seed_cogs:>9,.2f} | ${snap.labor_opex:>9,.2f} | ${snap.land_capex:>9,.2f} | "
+                f"${snap.animal_capex:>11,.2f} | "
                 f"${snap.closing_cash:>10,.2f} | ${snap.net_wealth:>9,.2f}"
             )
         return lines

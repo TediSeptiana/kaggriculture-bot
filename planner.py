@@ -14,6 +14,8 @@ class AgentPlanner:
     def __init__(self) -> None:
         self.worker_planner = WorkerPlanner()
         self.market_planner = MarketPlanner()
+        self.pending_animal: str | None = None
+        self.last_day: int | None = None
 
     def _assess_global_farm_demand(self, state: FarmState) -> List[WorkerRole]:
         """Evaluates macro demand across the farm to create a dynamic role priority list."""
@@ -80,6 +82,10 @@ class AgentPlanner:
     def plan_turn(self, obs: Dict[str, Any]) -> Dict[str, Any]:
         """Main entry point processing observation dict and returning action payload."""
         state = FarmState.from_obs(obs)
+        if state.day == 0 and self.last_day != 0:
+            self.pending_animal = None
+            self.market_planner.pending_animal = None
+        self.last_day = state.day
 
         # 1. Market Queue Planning (Orders executed sequentially)
         market_actions = self.market_planner.plan_orders(state)
@@ -92,7 +98,14 @@ class AgentPlanner:
 
         # 3. Main Farmer Execution (Unit ID: 0)
         farmer_inv = state.inventories[0] if len(state.inventories) > 0 else []
-        farmer_role = demand_roles[0] if demand_roles else WorkerRole.DIGGER
+        if self.pending_animal:
+            farmer_inv = list(farmer_inv) + [{self.pending_animal: 1}]
+        has_coop = any(
+            isinstance(tile, dict) and tile.get("kind") == "COOP"
+            for row in state.tiles for tile in row
+        )
+        waiting_animal = state.shed.get("GOOSE", 0) > 0 or state.shed.get("COW", 0) > 0
+        farmer_role = WorkerRole.ANIMAL if self.pending_animal or waiting_animal or not has_coop else (demand_roles[0] if demand_roles else WorkerRole.DIGGER)
 
         farmer_action = self.worker_planner.decide_action(
             unit_pos=state.farmer_pos,
@@ -101,6 +114,12 @@ class AgentPlanner:
             role=farmer_role,
             assigned_targets=assigned_targets,
         )
+        if farmer_action and farmer_action[0] == "PICKUP":
+            self.pending_animal = str(farmer_action[1])
+            self.market_planner.pending_animal = self.pending_animal
+        elif farmer_action and farmer_action[0] == "PLACE":
+            self.pending_animal = None
+            self.market_planner.pending_animal = None
 
         # 4. Hired Hands Execution (Unit IDs: 1..N)
         hands_actions: List[List[Any]] = []

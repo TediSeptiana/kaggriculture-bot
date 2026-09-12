@@ -28,23 +28,16 @@ logger = logging.getLogger(__name__)
 
 
 # ==========================================================================
-# NEW: Turn-level logger (added for match-to-match divergence debugging)
+# Turn-level logger
 # ==========================================================================
 class TurnLogger:
-    """Captures per-turn state snapshots for debugging match-to-match divergence.
+    """Captures per-turn state snapshots for debugging match-to-match divergence."""
 
-    This class is purely additive: it does NOT interfere with the existing
-    audit pipeline. It writes one JSON file per match, alongside the audit
-    reports, so that the user can diff matches turn-by-turn (for example,
-    to find the exact turn where Match 06 diverged from Match 07).
-    """
-
-    # Common observation keys across kaggriculture variants.
-    # We use best-effort extraction so nothing breaks if the schema differs.
     CASH_KEYS: Sequence[str] = ("cash", "money", "balance", "funds", "gold")
-    PRICE_KEYS: Sequence[str] = ("prices", "market", "market_prices", "price")
+    PRICE_KEYS: Sequence[str] = ("prices", "market_prices", "price")
     DAY_KEYS: Sequence[str] = ("day", "turn", "step")
     SEED_KEYS: Sequence[str] = ("seeds", "seed_inventory")
+    HANDS_KEYS: Sequence[str] = ("hands", "farm_hands", "workers")  # FIX: was missing, caused AttributeError
     CROP_KEYS: Sequence[str] = ("farms", "farm", "crops", "plots")
 
     def __init__(self, log_dir: Union[str, Path]) -> None:
@@ -71,7 +64,13 @@ class TurnLogger:
         max_depth: int = 3,
         _depth: int = 0,
     ) -> Any:
-        """Best-effort recursive search for any of the candidate keys."""
+        """Best-effort recursive search for any of the candidate keys.
+
+        WARNING: use only for fields that are UNIQUE across the observation
+        (e.g. "day", "hour"). Do NOT use for fields like "money" that appear
+        in multiple places (farms[0], farms[1]) because it will silently
+        return the first match. Use the specific extractors below instead.
+        """
         if _depth > max_depth or obj is None:
             return None
         if isinstance(obj, dict):
@@ -90,38 +89,98 @@ class TurnLogger:
         return None
 
     # ------------------------------------------------------------------
+    # FIX: specific extractors that respect player index
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_cash(obs: Any, player_idx: int) -> Optional[float]:
+        """Read money from obs['farms'][player_idx]['money'] only."""
+        if not isinstance(obs, dict):
+            return None
+        farms = obs.get("farms")
+        if isinstance(farms, list) and len(farms) > player_idx:
+            farm = farms[player_idx]
+            if isinstance(farm, dict):
+                return farm.get("money")
+        return None
+
+    @staticmethod
+    def _extract_seeds(obs: Any) -> Optional[Dict[str, int]]:
+        """Seeds live at obs['private']['seeds']."""
+        if not isinstance(obs, dict):
+            return None
+        private = obs.get("private")
+        if isinstance(private, dict):
+            return private.get("seeds")
+        return None
+
+    @staticmethod
+    def _extract_shed(obs: Any) -> Optional[Dict[str, int]]:
+        """Product inventory lives at obs['private']['shed']."""
+        if not isinstance(obs, dict):
+            return None
+        private = obs.get("private")
+        if isinstance(private, dict):
+            return private.get("shed")
+        return None
+
+    @staticmethod
+    def _extract_prices(obs: Any) -> Optional[Dict[str, int]]:
+        """Prices live at obs['market']['prices'] (shared)."""
+        if not isinstance(obs, dict):
+            return None
+        market = obs.get("market")
+        if isinstance(market, dict):
+            return market.get("prices")
+        return None
+
+    @staticmethod
+    def _extract_hands(obs: Any, player_idx: int) -> Optional[Any]:
+        """Hands live at obs['farms'][player_idx]['hands']."""
+        if not isinstance(obs, dict):
+            return None
+        farms = obs.get("farms")
+        if isinstance(farms, list) and len(farms) > player_idx:
+            farm = farms[player_idx]
+            if isinstance(farm, dict):
+                return farm.get("hands")
+        return None
+
+    # ------------------------------------------------------------------
     # Per-step summary
     # ------------------------------------------------------------------
-    def _summarize_step_state(self, step_state: Any) -> Dict[str, Any]:
+    def _summarize_step_state(
+        self, step_state: Any, player_idx: int = 0
+    ) -> Dict[str, Any]:
         summary: Dict[str, Any] = {}
 
-        # Raw action is the single most useful field for divergence analysis:
-        # HIRE / BUY_LAND / PLANT / SELL decisions live here.
         summary["action"] = self._try_get(step_state, "action")
         summary["reward"] = self._try_get(step_state, "reward")
         summary["status"] = self._try_get(step_state, "status")
 
         obs = self._try_get(step_state, "observation")
         if obs is not None:
-            cash = self._deep_find(obs, self.CASH_KEYS)
+            # FIX: use specific extractors instead of _deep_find
+            cash = self._extract_cash(obs, player_idx)
             if cash is not None:
                 summary["cash"] = cash
 
-            day = self._deep_find(obs, self.DAY_KEYS)
+            day = self._deep_find(obs, self.DAY_KEYS)  # unique field, safe
             if day is not None:
                 summary["day"] = day
 
-            hands = self._deep_find(obs, self.HANDS_KEYS)
+            hands = self._extract_hands(obs, player_idx)  # FIX
             if hands is not None:
                 summary["hands"] = hands
 
-            prices = self._deep_find(obs, self.PRICE_KEYS)
+            prices = self._extract_prices(obs)  # FIX
             if prices is not None:
                 summary["prices"] = prices
 
-            crops = self._deep_find(obs, self.CROP_KEYS)
-            if crops is not None:
-                summary["crops"] = crops
+            # crops = farms[player_idx] specifically
+            if isinstance(obs, dict):
+                farms = obs.get("farms")
+                if isinstance(farms, list) and len(farms) > player_idx:
+                    summary["farm"] = farms[player_idx]
 
         return summary
 
@@ -148,8 +207,11 @@ class TurnLogger:
             turn_entry: Dict[str, Any] = {"turn": turn_idx}
             try:
                 if isinstance(step, (list, tuple)):
+                    # FIX: pass player_idx so cash/hands are per-player
                     for p_idx, p_state in enumerate(step):
-                        turn_entry[f"player_{p_idx}"] = self._summarize_step_state(p_state)
+                        turn_entry[f"player_{p_idx}"] = self._summarize_step_state(
+                            p_state, player_idx=p_idx
+                        )
                 else:
                     turn_entry["raw"] = str(step)
             except Exception as exc:
@@ -176,39 +238,22 @@ class TurnLogger:
 
 
 # ==========================================================================
-# NEW: Extended daily matrix writer
+# Extended daily matrix writer
 # ==========================================================================
 class ExtendedDailyMatrixWriter:
-    """Writes a supplementary daily-matrix text report per match.
+    """Writes a supplementary daily-matrix text report per match."""
 
-    This is ADDITIVE. The main audit report generated by ``audit_logger.py``
-    is not touched. This writer produces ``match_XX_extended.txt`` with extra
-    columns so the user can inspect market prices, seed inventory, product
-    inventory, and raw market actions per day.
-
-    All extraction is best-effort and wrapped in try/except, so it can never
-    crash the benchmark run even if the observation schema changes.
-    """
-
-    # Reuse TurnLogger key sets so the schema stays in sync
     CASH_KEYS: Sequence[str] = TurnLogger.CASH_KEYS
     DAY_KEYS: Sequence[str] = TurnLogger.DAY_KEYS
     SEED_KEYS: Sequence[str] = TurnLogger.SEED_KEYS
-
-    # NOTE: we deliberately do NOT reuse TurnLogger.PRICE_KEYS here because
-    # that tuple contains "market", which would resolve to the entire market
-    # dict (inventory + prices) instead of just the price mapping.
     PRICE_KEYS: Sequence[str] = ("prices", "market_prices", "price")
-
     PRODUCT_KEYS: Sequence[str] = (
         "shed", "inventory", "products", "product_inventory",
         "harvest", "harvested", "storage",
     )
 
-    # Fallback: how many env steps equal one in-game day
     STEPS_PER_DAY_FALLBACK: int = 24
 
-    # Preferred display order and short labels for crop prices
     PRICE_ORDER: Sequence[Tuple[str, str]] = (
         ("WHEAT", "W"),
         ("CARROT", "C"),
@@ -236,10 +281,6 @@ class ExtendedDailyMatrixWriter:
 
     @staticmethod
     def _fmt_inv(v: Any) -> str:
-        """Compact dict-of-crop -> qty representation, e.g. 'WHEAT:12'.
-
-        Falls back to a short string if the value is not a dict.
-        """
         if v is None:
             return "-"
         if isinstance(v, dict):
@@ -257,11 +298,6 @@ class ExtendedDailyMatrixWriter:
 
     @classmethod
     def _fmt_prices(cls, v: Any) -> str:
-        """Compact price string, e.g. 'W:25,C:35,T:60,S:120,M:250'.
-
-        Uses short labels and a fixed order. Unknown keys are appended at
-        the end so nothing is silently dropped.
-        """
         if v is None:
             return "-"
         if not isinstance(v, dict):
@@ -276,7 +312,6 @@ class ExtendedDailyMatrixWriter:
                     parts.append(f"{short}:{int(v[full_name])}")
                 except (TypeError, ValueError):
                     parts.append(f"{short}:?")
-        # Any extra keys not in PRICE_ORDER
         for k, val in v.items():
             if k in seen:
                 continue
@@ -295,7 +330,6 @@ class ExtendedDailyMatrixWriter:
 
     @staticmethod
     def _compact_action(a: Any, max_len: int = 60) -> str:
-        """Compact representation of a market/farm action for logging."""
         try:
             if isinstance(a, dict):
                 parts: List[str] = []
@@ -337,7 +371,7 @@ class ExtendedDailyMatrixWriter:
                     state = step
 
                 obs = TurnLogger._try_get(state, "observation")
-                day = TurnLogger._deep_find(obs, self.DAY_KEYS)
+                day = TurnLogger._deep_find(obs, self.DAY_KEYS)  # unique, safe
 
                 if day is None:
                     day = turn_idx // self.STEPS_PER_DAY_FALLBACK
@@ -358,13 +392,13 @@ class ExtendedDailyMatrixWriter:
             first_obs = TurnLogger._try_get(first, "observation")
             last_obs = TurnLogger._try_get(last, "observation")
 
-            open_cash = TurnLogger._deep_find(first_obs, self.CASH_KEYS)
-            close_cash = TurnLogger._deep_find(last_obs, self.CASH_KEYS)
-            seed_inv = TurnLogger._deep_find(last_obs, self.SEED_KEYS)
-            prod_inv = TurnLogger._deep_find(last_obs, self.PRODUCT_KEYS)
-            prices = TurnLogger._deep_find(last_obs, self.PRICE_KEYS)
+            # FIX: use specific extractors that respect agent_idx
+            open_cash = TurnLogger._extract_cash(first_obs, agent_idx)
+            close_cash = TurnLogger._extract_cash(last_obs, agent_idx)
+            seed_inv = TurnLogger._extract_seeds(last_obs)
+            prod_inv = TurnLogger._extract_shed(last_obs)
+            prices = TurnLogger._extract_prices(last_obs)
 
-            # Collect raw actions taken during the day
             actions: List[str] = []
             for s in states:
                 a = TurnLogger._try_get(s, "action")
@@ -421,8 +455,8 @@ class ExtendedDailyMatrixWriter:
                 f.write(
                     "NOTE:\n"
                     "  - 'Prices' shows end-of-day market prices. Format: W:25,C:35,T:60,S:120,M:250,F:100\n"
-                    "  - 'Seed Inv' and 'Product Inv' are best-effort extractions from the observation.\n"
-                    "  - If a column shows '-', the key was not found in the current observation schema.\n"
+                    "  - 'Seed Inv' and 'Product Inv' come from obs['private']['seeds'] and obs['private']['shed'].\n"
+                    "  - Cash comes from obs['farms'][agent_idx]['money'] (respects player index).\n"
                 )
                 f.write("=" * 160 + "\n")
 
@@ -460,24 +494,20 @@ class BenchmarkSummary:
 
     @property
     def win_rate(self) -> float:
-        """Calculates win rate percentage."""
         if self.total_matches == 0:
             return 0.0
         return (self.wins / self.total_matches) * 100.0
 
     @property
     def avg_agent_score(self) -> float:
-        """Calculates mean agent reward score."""
         return statistics.mean(self.agent_scores) if self.agent_scores else 0.0
 
     @property
     def avg_opponent_score(self) -> float:
-        """Calculates mean opponent reward score."""
         return statistics.mean(self.opponent_scores) if self.opponent_scores else 0.0
 
     @property
     def avg_duration(self) -> float:
-        """Calculates mean match duration in seconds."""
         return statistics.mean(self.durations) if self.durations else 0.0
 
 
@@ -495,8 +525,8 @@ class MatchRunner:
         match_idx: int,
         opponent: Union[str, Any],
         auditor: Auditor,
-        turn_logger: Optional[TurnLogger] = None,                       # NEW (optional)
-        extended_writer: Optional[ExtendedDailyMatrixWriter] = None,    # NEW (optional)
+        turn_logger: Optional[TurnLogger] = None,
+        extended_writer: Optional[ExtendedDailyMatrixWriter] = None,
     ) -> Tuple[MatchResult, Dict[str, Any]]:
         """Executes a single environment match and audits the financial output."""
         start_time = time.perf_counter()
@@ -509,21 +539,23 @@ class MatchRunner:
             players = [opponent, my_agent]
             agent_idx = 1
 
-        env = make("kaggriculture", configuration={"episodeSteps": self.episode_steps}, debug=self.debug)
+        env = make(
+            "kaggriculture",
+            configuration={"episodeSteps": self.episode_steps},
+            debug=self.debug,
+        )
         env.run(players)
 
         elapsed = time.perf_counter() - start_time
 
         opponent_name = str(opponent) if isinstance(opponent, str) else "Opponent"
 
-        # ---- NEW: Write per-turn state log (wrapped so it can never crash the run) ----
         if turn_logger is not None:
             try:
                 turn_logger.log_match(env, match_idx, agent_idx, opponent_name)
             except Exception as exc:
                 logger.error("Turn logging failed for match %d: %s", match_idx, exc)
 
-        # ---- NEW: Write extended daily matrix (also wrapped) ----
         if extended_writer is not None:
             try:
                 extended_writer.write(env, match_idx, agent_idx, opponent_name)
@@ -539,7 +571,6 @@ class MatchRunner:
         agent_score = float(final_step[agent_idx].get("reward") or 0.0)
         opp_score = float(final_step[1 - agent_idx].get("reward") or 0.0)
 
-        # Determine Outcome Status
         if agent_score > opp_score:
             res_str = "WIN"
         elif agent_score < opp_score:
@@ -565,7 +596,6 @@ class BenchmarkReporter:
 
     @staticmethod
     def print_header(num_matches: int, opponent: str, log_dir: Path) -> None:
-        """Prints benchmark suite execution header."""
         print("==================================================")
         print(f" Starting Financial Audit Benchmark ({num_matches} Matches)")
         print(f" Opponent Agent : '{opponent}'")
@@ -574,7 +604,6 @@ class BenchmarkReporter:
 
     @staticmethod
     def print_match_result(result: MatchResult, total_matches: int) -> None:
-        """Prints single match completion statistics."""
         print(
             f"Match {result.match_id:02d}/{total_matches:02d} | "
             f"Result: {result.result_status:<4} | "
@@ -585,7 +614,6 @@ class BenchmarkReporter:
 
     @staticmethod
     def print_summary(summary: BenchmarkSummary, log_dir: Path) -> None:
-        """Prints comprehensive benchmark summary table."""
         print("\n==================================================")
         print(" BENCHMARK SUMMARY REPORT")
         print("==================================================")
@@ -614,7 +642,6 @@ class BenchmarkRunner:
         auditor = Auditor(audit_folder)
         match_runner = MatchRunner()
 
-        # NEW: instantiate loggers into the same folder as audit reports
         turn_logger = TurnLogger(audit_folder)
         extended_writer = ExtendedDailyMatrixWriter(audit_folder)
 
@@ -633,7 +660,6 @@ class BenchmarkRunner:
             )
             last_replay = replay_json
 
-            # Record Statistics
             summary.agent_scores.append(result.agent_score)
             summary.opponent_scores.append(result.opponent_score)
             summary.durations.append(result.duration)
@@ -649,14 +675,12 @@ class BenchmarkRunner:
 
         BenchmarkReporter.print_summary(summary, audit_folder)
 
-        # Safely export last match replay for visualizer
         if last_replay:
             self._export_replay(last_replay)
 
         return summary
 
     def _export_replay(self, replay_data: Dict[str, Any]) -> None:
-        """Exports the last match replay JSON safely."""
         try:
             with open(self.replay_export_path, "w", encoding="utf-8") as f:
                 json.dump(replay_data, f, indent=2)
@@ -672,4 +696,4 @@ def run_benchmark(num_matches: int = 10, opponent: str = "starter") -> None:
 
 
 if __name__ == "__main__":
-    run_benchmark(num_matches= 50, opponent="starter")
+    run_benchmark(num_matches=20, opponent="starter")
