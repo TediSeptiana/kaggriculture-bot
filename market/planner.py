@@ -18,7 +18,7 @@ class MarketPlanner:
     MAX_ORDERS_PER_TURN: int = 10
     TOTAL_SEASON_DAYS: int = 30
 
-    def __init__(self, emergency_reserve: float = 100.0) -> None:
+    def __init__(self, emergency_reserve: float = 300.0) -> None:
         self.emergency_reserve = emergency_reserve
         self.hiring_manager = HiringManager()
         self.sales_manager = SalesManager()
@@ -49,6 +49,14 @@ class MarketPlanner:
         # 2. Dispatch Sales Orders (Liquidates produce to increase cash)
         sales_orders = self.sales_manager.plan_sales_orders(state)
         orders.extend(sales_orders)
+        # Setelah sales_orders ditambahkan, estimasi proceeds:
+        sales_proceeds = sum(
+            state.market_prices.get(item, 0.0) * count
+            for item, count in state.shed.items()
+            if count > 0 and not item.endswith("_SEED")
+        )
+        disposable_cash += sales_proceeds
+
 
         # 3. Dispatch Land Expansion Orders
         land_orders, disposable_cash = self.land_manager.plan_land_orders(

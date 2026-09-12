@@ -21,7 +21,7 @@ class LandManager:
     SAFETY_MARGIN: float = 0.50     # NPV must exceed cost * 0.5 to justify capital risk
     MIN_UTILIZATION: float = 0.70   # Existing farm land must be at least 70% utilized
     CASH_BUFFER: float = 500.0      # Safety liquid cash buffer retained after purchase
-    MIN_DAYS_REMAINING: int = 4     # Do not expand within the final 4 days
+    MIN_DAYS_REMAINING: int = 3     # Do not expand within the final 4 days
 
     def _next_target_quadrant(self, state: FarmState) -> Optional[str]:
         """Determines sequential quadrant expansion target (NE -> SW -> SE)."""
