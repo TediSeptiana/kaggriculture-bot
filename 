@@ -1,0 +1,9 @@
+  0v                   [m 7904398 fix: bug hiring uncontroler
+  experiment-market    [m 10a8bcc edit: Memisahkan market.py menjadi beberapa file
+  gh-pages             [m 0df777e first commit
+  main                 [m 10a8bcc edit: Memisahkan market.py menjadi beberapa file
+  market-algorithm     [m f83d1c1 opt: Optimasi hiring
+  tile-optimizer       [m 7904398 [ahead 1] fix: bug hiring uncontroler
+  tile-optimizer-v01   [m 7904398 fix: bug hiring uncontroler
+* [32mtile-optimizer-v02   [m 357c60f Fix: Bug gak tau intinnya apa lah itu tuh oh iya hiring yang gak jelas dan gak kekontrol tapi v2
+  worker-optimizer-tile[m 10a8bcc edit: Memisahkan market.py menjadi beberapa file
