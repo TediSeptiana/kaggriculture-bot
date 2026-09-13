@@ -18,10 +18,22 @@ class LandManager:
     }
 
     SEASON_DAYS: int = 30
-    SAFETY_MARGIN: float = 0.50     # NPV must exceed cost * 0.5 to justify capital risk
-    MIN_UTILIZATION: float = 0.70   # Existing farm land must be at least 70% utilized
-    CASH_BUFFER: float = 500.0      # Safety liquid cash buffer retained after purchase
-    MIN_DAYS_REMAINING: int = 3     # Do not expand within the final 4 days
+
+    # FIX: diperketat dari 0.50 → 1.0 (NPV harus > cost)
+    SAFETY_MARGIN: float = 1.0
+
+    # FIX: dinaikkan dari 0.70 → 0.85
+    MIN_UTILIZATION: float = 0.85
+
+    # FIX: dinaikkan dari 500 → 1500
+    CASH_BUFFER: float = 1500.0
+
+    # FIX: dinaikkan dari 3 → 8 hari
+    MIN_DAYS_REMAINING: int = 8
+
+    # FIX BARU: cash minimum multiplier — cegah beli land saat cash tipis
+    # Land $2K butuh $2K * 2.5 + $1.5K buffer = $6.5K
+    MIN_CASH_MULTIPLIER: float = 2.5
 
     def _next_target_quadrant(self, state: FarmState) -> Optional[str]:
         """Determines sequential quadrant expansion target (NE -> SW -> SE)."""
@@ -42,12 +54,13 @@ class LandManager:
         )
         utilization = occupied / float(len(unlocked))
 
-        # Benchmark baseline: WHEAT production cycle (7 days, ~6 yield units, $10 seed cost)
-        price = state.market_prices.get("WHEAT", 25.0)
-        net_per_cycle = (6.0 * price) - 10.0
-        profit_full = net_per_cycle / 7.0  # ~$20/tile/day at $25 unit price
+        # FIX: benchmark MELON (crop paling profitable), bukan WHEAT
+        melon_price = state.market_prices.get("MELON", 250.0)
+        # MELON: 10 hari siklus, ~4 yield/cycle unfertilized, seed $80
+        net_per_cycle = (4.0 * melon_price) - 80.0
+        profit_full = net_per_cycle / 10.0  # ~$92/tile/day di $250/unit
 
-        # Scale by actual farm tile utilization rate
+        # Scale by utilization
         return profit_full * utilization
 
     def _compute_npv(
@@ -61,8 +74,9 @@ class LandManager:
         days_left = max(0, self.SEASON_DAYS - state.day)
         profit_per_tile = self._estimate_profit_per_tile_per_day(state)
 
-        # Projected marginal daily revenue from 25 new tiles at 80% target efficiency
-        marginal_daily = profit_per_tile * new_tiles * 0.80
+        # Projected marginal daily revenue from 25 new tiles
+        # FIX: efficiency 0.80 → 0.55 (konservatif)
+        marginal_daily = profit_per_tile * new_tiles * 0.55
         return (marginal_daily * days_left) - cost
 
     def calculate_land_score(
@@ -75,6 +89,14 @@ class LandManager:
 
         cost = self.LAND_COSTS[target]
         days_left = self.SEASON_DAYS - state.day
+
+        # ==================================================================
+        # FIX BARU Guard 0: absolute cash check
+        # Cegah beli land saat cash tipis (Match 11 D13 cash $2.266 beli $4K)
+        # ==================================================================
+        required_cash = cost * self.MIN_CASH_MULTIPLIER + self.CASH_BUFFER
+        if state.money < required_cash:
+            return target, 0.0
 
         # Guard 1: Minimum operational days remaining
         if days_left < self.MIN_DAYS_REMAINING:
