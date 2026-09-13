@@ -39,3 +39,24 @@ def test_farm_state_from_obs(dummy_obs: dict) -> None:
     assert state.farmer_pos == (4, 4)
     assert state.is_shed_adjacent((4, 4)) is True
     assert len(state.get_unlocked_tiles()) == 25
+
+
+def test_farm_state_uses_active_player_farm(dummy_obs: dict) -> None:
+    dummy_obs["player"] = 1
+    dummy_obs["farms"].append(
+        {
+            "money": 2750.0,
+            "unlocked_quadrants": ["NE"],
+            "farmer": [8, 1],
+            "hands": [],
+            "hires_today": 0,
+            "tiles": [[None for _ in range(10)] for _ in range(10)],
+        }
+    )
+
+    state = FarmState.from_obs(dummy_obs)
+
+    assert state.player == 1
+    assert state.money == 2750.0
+    assert state.farmer_pos == (8, 1)
+    assert state.unlocked_quadrants == ["NE"]

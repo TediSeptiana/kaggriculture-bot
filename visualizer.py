@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import argparse
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeAlias
@@ -45,6 +47,111 @@ ActionDict: TypeAlias = Dict[str, Any]
 
 class ReplayExtractionError(Exception):
     """Raised when replay frame extraction fails or encounters malformed state."""
+
+
+def _as_number(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _orders_from_action(action: Any) -> List[List[Any]]:
+    """Return market orders while tolerating malformed or empty actions."""
+    if not isinstance(action, dict):
+        return []
+    orders = action.get("market", [])
+    if isinstance(orders, list) and orders and isinstance(orders[0], str):
+        return [orders]
+    return [order for order in orders if isinstance(order, list)] if isinstance(orders, list) else []
+
+
+def load_match_json(path: Path) -> Dict[str, Any]:
+    """Load one benchmark turn log; TXT audit reports are never consulted."""
+    with path.open("r", encoding="utf-8") as stream:
+        payload = json.load(stream)
+    if not isinstance(payload, dict) or not isinstance(payload.get("turns"), list):
+        raise ReplayExtractionError(f"Invalid match JSON: {path}")
+    return payload
+
+
+def render_match_json(path: Path, output: Optional[Path] = None) -> Path:
+    """Render transaction and market telemetry from one match turn JSON."""
+    payload = load_match_json(path)
+    player_key = f"player_{payload.get('agent_index', 0)}"
+    rows = [turn.get(player_key, {}) for turn in payload["turns"]]
+    rows = [row for row in rows if isinstance(row, dict)]
+    if not rows:
+        raise ReplayExtractionError(f"No player rows in match JSON: {path}")
+
+    turns = list(range(len(rows)))
+    cash = [_as_number(row.get("cash")) for row in rows]
+    transactions: List[Tuple[int, str, str, float, float]] = []
+    price_history: Dict[str, List[float]] = defaultdict(list)
+    for turn, row in enumerate(rows):
+        market = row.get("market", {})
+        prices = market.get("prices", {}) if isinstance(market, dict) else {}
+        for item, price in prices.items():
+            price_history[str(item)].append(_as_number(price))
+        for order in _orders_from_action(row.get("action")):
+            if not order:
+                continue
+            kind = str(order[0]).upper()
+            item = str(order[1]).upper() if len(order) > 1 else ""
+            quantity = _as_number(order[2], 1.0) if len(order) > 2 else 1.0
+            unit_price = _as_number(prices.get(item))
+            transactions.append((turn, kind, item, quantity, unit_price))
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 9), constrained_layout=True)
+    match_id = payload.get("match_id", path.stem)
+    fig.suptitle(f"Match {match_id} | JSON transaction dashboard", fontsize=16, fontweight="bold")
+
+    axes[0, 0].plot(turns, cash, color="#1769aa", linewidth=2)
+    axes[0, 0].set_title("Kas aktual")
+    axes[0, 0].set_xlabel("Turn")
+    axes[0, 0].set_ylabel("$", rotation=0)
+    axes[0, 0].grid(alpha=0.25)
+
+    labels = [f"D{int(rows[t].get('day', 0)):02d} T{t}" for t, *_ in transactions]
+    values = [quantity * price for _, kind, _, quantity, price in transactions]
+    colors = ["#2e7d32" if kind == "SELL" else "#c62828" for _, kind, *_ in transactions]
+    axes[0, 1].bar(range(len(values)), values, color=colors)
+    axes[0, 1].set_title("Nilai transaksi per event")
+    axes[0, 1].set_ylabel("Nilai ($)")
+    axes[0, 1].set_xticks(range(len(labels)), labels, rotation=75, fontsize=7) if labels else None
+    axes[0, 1].grid(axis="y", alpha=0.25)
+
+    plotted_prices = False
+    for item, prices in sorted(price_history.items()):
+        if any(prices):
+            axes[1, 0].plot(turns[:len(prices)], prices, label=item, linewidth=1.2)
+            plotted_prices = True
+    axes[1, 0].set_title("Harga pasar saat turn")
+    axes[1, 0].set_xlabel("Turn")
+    axes[1, 0].set_ylabel("Harga/unit ($)")
+    if plotted_prices:
+        axes[1, 0].legend(fontsize=7, ncol=2)
+    axes[1, 0].grid(alpha=0.25)
+
+    axes[1, 1].axis("off")
+    lines = ["EVENT TIMELINE", ""]
+    for turn, kind, item, quantity, price in transactions:
+        day = int(rows[turn].get("day", 0))
+        if kind == "HIRE":
+            detail = f"{kind} ${price:,.0f}"
+        elif kind == "BUY_LAND":
+            detail = f"{kind} ${price:,.0f}"
+        else:
+            detail = f"{kind} {quantity:g} {item} @ ${price:,.2f}"
+        lines.append(f"D{day:02d} T{turn:03d}  {detail}")
+    if len(lines) == 2:
+        lines.append("No market transactions recorded")
+    axes[1, 1].text(0.02, 0.98, "\n".join(lines[-28:]), va="top", family="monospace", fontsize=8)
+
+    destination = output or path.with_name(f"{path.stem}.png")
+    fig.savefig(destination, dpi=140)
+    plt.close(fig)
+    return destination
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +578,15 @@ class DashboardAnalyticsRenderer:
 
 def main() -> None:
     """Main execution function initializing simulation and dashboard GUI."""
+    parser = argparse.ArgumentParser(description="Visualize Kaggriculture JSON match logs")
+    parser.add_argument("--json", type=Path, help="Path to match_XX_turns.json")
+    parser.add_argument("--output", type=Path, help="PNG output path")
+    args = parser.parse_args()
+    if args.json:
+        output = render_match_json(args.json, args.output)
+        logger.info("Saved JSON match visualization to %s", output)
+        return
+
     logger.info("Initializing Kaggriculture Multi-Panel Dashboard...")
 
     env = make("kaggriculture", configuration={"episodeSteps": EPISODE_STEPS}, debug=True)
