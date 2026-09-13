@@ -202,16 +202,34 @@ class AgentPlanner:
         )
 
         # ------------------------------------------------------------------
+        # 3b. Harvest urgency untuk keputusan hand idx 3
+        # Kalau banyak crop siap panen, JANGAN korbankan 1 hand untuk animal
+        # ------------------------------------------------------------------
+        harvestable_crops = 0
+        for row in state.tiles:
+            for t in row:
+                if isinstance(t, dict) and t.get("kind") == "PLANT":
+                    if int(t.get("yield_units", 0)) <= 0:
+                        continue
+                    crop = str(t.get("crop", ""))
+                    planted_day = int(t.get("planted_day", 0))
+                    crop_age = state.day - planted_day
+                    spec = CROP_SPECS.get(crop)
+                    first_yield = spec.first_yield_day if spec else 2
+                    if crop_age >= first_yield:
+                        harvestable_crops += 1
+
+        # Threshold: kalau >= 3 crop siap panen, semua hand bantu harvest
+        urgent_harvest = harvestable_crops >= 3
+
+        # ------------------------------------------------------------------
         # 4. Main Farmer Execution (Unit ID: 0)
-        # FIX: Farmer hanya ANIMAL saat TRANSISI (pickup/place), bukan terus-menerus
+        # Farmer jadi ANIMAL hanya saat transisi (pickup/place)
         # ------------------------------------------------------------------
         farmer_inv = state.inventories[0] if len(state.inventories) > 0 else []
         if self.pending_animal:
             farmer_inv = list(farmer_inv) + [{self.pending_animal: 1}]
 
-        # Farmer jadi ANIMAL HANYA kalau:
-        #   - sedang bawa animal (pickup → place)
-        #   - ada animal di shed tapi belum ada struktur untuk place
         farmer_needs_animal = (
             self.pending_animal is not None
             or (shed_goose > 0 and not has_coop)
@@ -244,9 +262,10 @@ class AgentPlanner:
 
         # ------------------------------------------------------------------
         # 5. Hired Hands Execution (Unit IDs: 1..N)
-        # FIX: Hand ke-4 (idx 3) jadi ANIMAL specialist
+        # FIX: Hand ke-4 (idx 3) jadi ANIMAL specialist HANYA jika
+        #      tidak ada urgent harvest. Kalau banyak crop matang,
+        #      semua hand fokus harvest.
         # ------------------------------------------------------------------
-        # Apakah ada pekerjaan animal yang perlu hand?
         animal_work_available = (
             has_hungry_animal
             or has_animal_yield
@@ -265,11 +284,16 @@ class AgentPlanner:
                 else []
             )
 
-            # FIX: hand idx 3 = animal specialist
-            if idx == 3 and animal_work_available:
+            # Hand idx 3 jadi ANIMAL HANYA jika:
+            #   - ada animal work
+            #   - DAN tidak ada urgent harvest
+            if idx == 3 and animal_work_available and not urgent_harvest:
                 assigned_role = WorkerRole.ANIMAL
+            elif idx == 3 and urgent_harvest:
+                # Ada crop matang banyak → bantu harvest
+                assigned_role = WorkerRole.HARVESTER
             elif idx == 3:
-                # Tidak ada animal work, tapi hand ke-4 ada → VERSATILE
+                # Tidak ada animal work DAN tidak urgent harvest
                 assigned_role = WorkerRole.VERSATILE
             else:
                 role_idx = (idx + 1) % len(demand_roles)

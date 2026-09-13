@@ -82,22 +82,14 @@ class TaskEvaluator:
                         if carried("SHEEP"):
                             return ["PLACE", "SHEEP"]
 
+        # ============================================================
+        # ANIMAL — urutan prioritas:
+        #   1. Preemptive pickup WHEAT dari shed (kalau ada hewan lapar)
+        #   2. COLLECT egg/milk/wool (paling urgent — yield bisa terbuang)
+        #   3. COLLECT_FERTILIZER (nilai $100+, tidak accumulate)
+        #   4. FEED (wajib tiap hari, kalau tidak hewan kabur)
+        # ============================================================
         if role_type == "ANIMAL":
-            if isinstance(current_tile, dict) and current_tile.get("kind") in ("COOP", "PASTURE"):
-                animal = current_tile.get("animal")
-                # PRIORITAS: collect dulu sebelum feed
-                if int(current_tile.get("yield_units", 0)) > 0:
-                    return ["COLLECT"]
-                if not current_tile.get("fed_today", False):
-                    return ["FEED"]
-
-        # ============================================================
-        # FEED — FIX: preemptive pickup wheat dari shed
-        # Worker spawn di shed, jadi pickup harus trigger SEBELUM
-        # worker jalan ke coop.
-        # ============================================================
-        if role_type == "FEED":
-            # Cek apakah ada animal lapar di farm
             has_hungry_animal = any(
                 isinstance(t, dict)
                 and t.get("kind") in ("COOP", "PASTURE")
@@ -106,8 +98,7 @@ class TaskEvaluator:
                 for row in tiles for t in row
             )
 
-            # PREEMPTIVE: kalau di shed, tidak bawa wheat, ada yang lapar
-            # → pickup wheat dulu
+            # Preemptive pickup wheat
             if (
                 has_hungry_animal
                 and not carried("WHEAT")
@@ -116,14 +107,46 @@ class TaskEvaluator:
             ):
                 return ["PICKUP", "WHEAT", 5]
 
-            # Kalau bawa wheat dan berdiri di coop dengan hungry animal → FEED
+            if isinstance(current_tile, dict) and current_tile.get("kind") in ("COOP", "PASTURE"):
+                animal = current_tile.get("animal")
+                if animal:
+                    # ⚡ FIX: FERTILIZER DULU (tidak accumulate — hilang kalau tidak di-collect hari ini)
+                    if current_tile.get("fertilizer_available", False):
+                        return ["COLLECT_FERTILIZER"]
+                    # Egg/milk/wool kedua (max_held 4, tahan beberapa hari)
+                    if int(current_tile.get("yield_units", 0)) > 0:
+                        return ["COLLECT"]
+                    # Feed terakhir
+                    if not current_tile.get("fed_today", False) and carried("WHEAT"):
+                        return ["FEED"]
+
+        # ============================================================
+        # FEED — untuk role khusus FEED (fallback ke ANIMAL di atas)
+        # ============================================================
+        if role_type == "FEED":
+            has_hungry_animal = any(
+                isinstance(t, dict)
+                and t.get("kind") in ("COOP", "PASTURE")
+                and t.get("animal")
+                and not t.get("fed_today", False)
+                for row in tiles for t in row
+            )
+
+            if (
+                has_hungry_animal
+                and not carried("WHEAT")
+                and state.is_shed_adjacent(unit_pos)
+                and state.shed.get("WHEAT", 0) > 0
+            ):
+                return ["PICKUP", "WHEAT", 5]
+
             if isinstance(current_tile, dict) and current_tile.get("kind") in {"COOP", "PASTURE"}:
                 if current_tile.get("animal") and not current_tile.get("fed_today", False):
                     if carried("WHEAT"):
                         return ["FEED"]
 
         # ============================================================
-        # COLLECT_FERTILIZER
+        # COLLECT_FERTILIZER — role khusus
         # ============================================================
         if role_type == "COLLECT_FERTILIZER":
             if isinstance(current_tile, dict) and current_tile.get("kind") in {"COOP", "PASTURE"}:

@@ -12,13 +12,20 @@ class SeedManager:
     """Evaluates crop economics and handles seed purchasing orders."""
 
     TOTAL_SEASON_DAYS: int = 30
-    
-    # FIX: safety reserve - jangan pernah habiskan cash
+
+    # Reserve minimum cash
     MIN_CASH_RESERVE: float = 200.0
-    # FIX: max seed di inventory (buffer 5 di atas kapasitas tile)
+    # Buffer seed di atas kapasitas tile
     SEED_BUFFER: int = 5
-    # FIX: max beli per turn per crop (jangan 15)
-    MAX_BUY_PER_TURN: int = 3
+    # Max beli per turn per crop
+    MAX_BUY_PER_TURN: int = 5
+
+    # Late-game cutoff: berhenti beli hanya di 2 hari terakhir
+    # (CARROT/WHEAT first_yield = 2 hari, masih bisa panen D28-D29)
+    LATE_GAME_CUTOFF: int = 28
+
+    # Crop cepat untuk fallback
+    FAST_CROPS = {"WHEAT", "CARROT"}
 
     def __init__(
         self,
@@ -38,6 +45,10 @@ class SeedManager:
         """Computes multi-attribute utility score for purchasing a specific seed type."""
         price = state.market_prices.get(spec.product_name, 0.0)
         cost = float(spec.seed_cost)
+
+        # FIX: kalau harga = 0 (key mismatch), jangan beli
+        if price <= 0.0:
+            return -1.0
 
         expected_yield = (spec.base_yield + spec.max_yield) / 2.0
         revenue = price * expected_yield
@@ -61,7 +72,9 @@ class SeedManager:
         market_val = min(1.0, price / max(1.0, max_market_price))
 
         remaining_days = self.TOTAL_SEASON_DAYS - state.day
-        if spec.first_yield_day >= remaining_days:
+        # FIX: gunakan > bukan >= agar crop yang pas muat tetap diizinkan
+        # Contoh: CARROT first_yield = 2, remaining = 2 → masih bisa panen D+2
+        if spec.first_yield_day > remaining_days:
             return -1.0
 
         return (
@@ -71,9 +84,6 @@ class SeedManager:
             + self.delta_mkt * market_val
         )
 
-    # ------------------------------------------------------------------
-    # FIX: helper untuk hitung kapasitas
-    # ------------------------------------------------------------------
     def _count_empty_tiles(self, state: FarmState) -> int:
         """Hitung tile kosong yang bisa ditanam (None, unlocked, bukan weed)."""
         try:
@@ -85,7 +95,6 @@ class SeedManager:
                         count += 1
             return count
         except Exception:
-            # fallback
             return len(state.get_unlocked_tiles())
 
     def _count_animals(self, state: FarmState) -> int:
@@ -108,32 +117,34 @@ class SeedManager:
         """Generates sorted list of BUY_SEED orders based on utility scores."""
         orders: List[MarketOrder] = []
 
-        # FIX: hanya beli seed di turn pertama setiap hari (hour == 0)
-        # Ini mencegah beli 3 seed × 24 turn = 72 seed/hari
+        # Hanya beli seed di turn pertama setiap hari
         if state.hour != 0:
             return orders
 
-        # FIX 1: reserve cash dulu
+        # Reserve cash dulu
         available = max(0.0, disposable_cash - self.MIN_CASH_RESERVE)
         if available < 10.0:
             return orders
 
-        # FIX 2: hitung kapasitas
+        # Hitung kapasitas
         empty_tiles = self._count_empty_tiles(state)
         seeds_in_inv = sum(state.seeds.values())
 
-        # FIX 3: kalau seed sudah melebihi kapasitas + buffer, JANGAN BELI
+        # Kalau seed sudah melebihi kapasitas + buffer, JANGAN BELI
         if seeds_in_inv >= empty_tiles + self.SEED_BUFFER:
             return orders
 
-        # FIX 4: room untuk seed baru
         room_for_seeds = max(0, empty_tiles - seeds_in_inv)
         if room_for_seeds <= 0:
             return orders
 
-        # FIX 5: stop beli kalau late game (hewan lebih penting)
-        if state.day >= 18:
+        # FIX: late-game cutoff hanya 2 hari terakhir
+        # CARROT/WHEAT masih bisa ditanam sampai D28
+        if state.day >= self.LATE_GAME_CUTOFF:
             return orders
+
+        # Hitung sisa hari
+        remaining_days = self.TOTAL_SEASON_DAYS - state.day
 
         seed_scores: List[Tuple[float, str, CropSpec]] = []
 
@@ -142,26 +153,38 @@ class SeedManager:
             if score > 0.0:
                 seed_scores.append((score, crop_name, spec))
 
+        # FIX: kalau tidak ada crop yang muat (semua score -1), coba crop cepat
+        if not seed_scores:
+            for crop_name in self.FAST_CROPS:
+                spec = CROP_SPECS.get(crop_name)
+                if spec is None:
+                    continue
+                if spec.first_yield_day <= remaining_days:
+                    # score rendah tapi lebih baik daripada tidak tanam
+                    seed_scores.append((0.5, crop_name, spec))
+
         seed_scores.sort(key=lambda x: x[0], reverse=True)
 
         for _, crop_name, spec in seed_scores:
             if available < spec.seed_cost:
-                break  # FIX: break bukan continue, karena sorted by score
+                break
 
             current_count = state.seeds.get(crop_name, 0)
 
-            # FIX 6: target konservatif
+            # Target konservatif berdasarkan crop
             if crop_name == "WHEAT":
-                # wheat HANYA untuk pakan animal
                 animal_count = self._count_animals(state)
-                # Simpan 3 hari pakan di depan
-                target_count = max(10, animal_count * 3)
+                # Wheat untuk pakan: 3 hari ke depan. Kalau tidak ada hewan, minimal 5.
+                target_count = max(5, animal_count * 3) if animal_count > 0 else 5
             elif crop_name in {"STRAWBERRY", "TOMATO"}:
-                # skip dulu, ROI terlalu lambat untuk 30 hari
+                # Skip — ROI lambat untuk 30 hari
                 target_count = 0
             elif crop_name == "MELON":
-                # melon = profit utama, tapi jangan banyak
-                target_count = max(5, room_for_seeds // 3)
+                # MELON: butuh 10 hari, jangan tanam kalau < 10 hari
+                if remaining_days < 10:
+                    target_count = 0
+                else:
+                    target_count = max(3, min(8, room_for_seeds // 3))
             elif crop_name == "CARROT":
                 target_count = max(5, room_for_seeds // 4)
             else:
@@ -171,7 +194,6 @@ class SeedManager:
             if deficit <= 0:
                 continue
 
-            # FIX 7: cap buy per turn KECIL
             affordable = int(available // spec.seed_cost)
             buy_amount = min(deficit, affordable, self.MAX_BUY_PER_TURN, room_for_seeds)
 

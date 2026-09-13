@@ -19,7 +19,15 @@ class MarketPlanner:
     MAX_ORDERS_PER_TURN: int = 10
     TOTAL_SEASON_DAYS: int = 30
 
-    def __init__(self, emergency_reserve: float = 300.0) -> None:
+    # FIX: reserve lebih besar untuk safety
+    DEFAULT_EMERGENCY_RESERVE: float = 500.0
+
+    # FIX: threshold utilisasi untuk beli land
+    MIN_LAND_UTILIZATION: float = 0.75
+    # FIX: minimal cash untuk beli land (2x biaya termahal)
+    MIN_LAND_CASH_MULTIPLIER: float = 2.0
+
+    def __init__(self, emergency_reserve: float = DEFAULT_EMERGENCY_RESERVE) -> None:
         self.emergency_reserve = emergency_reserve
         self.hiring_manager = HiringManager()
         self.sales_manager = SalesManager()
@@ -29,8 +37,30 @@ class MarketPlanner:
 
     def get_disposable_cash(self, state: FarmState) -> float:
         """Calculates available liquid capital above the safety reserve buffer."""
+        # FIX: emergency stop kalau cash sangat rendah
+        if state.money < 100:
+            return 0.0
+
         spending_cap = state.money * (0.40 if state.day == 0 else 0.70)
         return max(0.0, min(state.money - self.emergency_reserve, spending_cap))
+
+    def _land_utilization(self, state: FarmState) -> float:
+        """Hitung utilisasi tile (used / total unlocked)."""
+        try:
+            used = 0
+            total = 0
+            for row in state.tiles:
+                for t in row:
+                    if isinstance(t, str) and t == "LOCKED":
+                        continue
+                    total += 1
+                    if t is not None:
+                        used += 1
+            if total == 0:
+                return 1.0
+            return used / total
+        except Exception:
+            return 1.0  # kalau error, izinkan beli land (default behavior lama)
 
     def plan_orders(self, state: FarmState) -> List[MarketOrder]:
         """Formulates an ordered list of utility-optimized market orders."""
@@ -38,16 +68,27 @@ class MarketPlanner:
         disposable_cash = self.get_disposable_cash(state)
 
         # ------------------------------------------------------------------
-        # 1. LAND EXPANSION (phase-gated)
+        # 1. LAND EXPANSION (phase-gated + utilisasi check)
         # ------------------------------------------------------------------
         if state.day <= 15:
-            target_quad = ("NE", 1000.0, 3), ("SW", 2000.0, 7), ("SE", 4000.0, 11)
+            utilization = self._land_utilization(state)
+
+            target_quad = (
+                ("NE", 1000.0, 3),
+                ("SW", 2000.0, 7),
+                ("SE", 4000.0, 11),
+            )
             for quadrant, cost, deadline in target_quad:
                 if quadrant not in state.unlocked_quadrants and state.day >= deadline:
-                    # FIX: butuh buffer 2x cost supaya tidak stranded
-                    if state.money >= cost * 2 + self.emergency_reserve:
+                    # FIX: cek utilisasi dulu — jangan beli kalau tile masih banyak kosong
+                    if utilization < self.MIN_LAND_UTILIZATION:
+                        break
+
+                    # FIX: butuh buffer 2x cost + reserve
+                    required = cost * self.MIN_LAND_CASH_MULTIPLIER + self.emergency_reserve
+                    if state.money >= required:
                         orders.append(["BUY_LAND"])
-                        disposable_cash -= cost
+                        disposable_cash = max(0.0, disposable_cash - cost)
                     break
 
         # ------------------------------------------------------------------
@@ -74,7 +115,9 @@ class MarketPlanner:
             disposable_cash = max(0.0, disposable_cash - cost)
 
         # ------------------------------------------------------------------
-        # 4. SALES (liquidate produce)
+        # 4. SALES (liquidate produce) — TIDAK mengurangi disposable_cash
+        # karena sales menghasilkan cash, bukan mengeluarkan.
+        # Proceeds akan ditambahkan setelah order diproses.
         # ------------------------------------------------------------------
         sales_orders = self.sales_manager.plan_sales_orders(state)
         orders.extend(sales_orders)
@@ -87,13 +130,15 @@ class MarketPlanner:
         disposable_cash += sales_proceeds
 
         # ------------------------------------------------------------------
-        # 5. LAND (fallback)
+        # 5. LAND (fallback — hanya kalau phase gate di atas tidak trigger)
         # ------------------------------------------------------------------
         if not any(order == ["BUY_LAND"] for order in orders):
-            land_orders, disposable_cash = self.land_manager.plan_land_orders(
-                state, disposable_cash
-            )
-            orders.extend(land_orders)
+            utilization = self._land_utilization(state)
+            if utilization >= self.MIN_LAND_UTILIZATION:
+                land_orders, disposable_cash = self.land_manager.plan_land_orders(
+                    state, disposable_cash
+                )
+                orders.extend(land_orders)
 
         # ------------------------------------------------------------------
         # 6. SEEDS
