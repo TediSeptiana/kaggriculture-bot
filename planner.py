@@ -27,6 +27,14 @@ class AgentPlanner:
         weed_count = 0
         empty_count = 0
 
+        # --- Animal counters ---
+        has_coop = False
+        has_pasture = False
+        has_empty_coop = False
+        has_empty_pasture = False
+        has_hungry_animal = False
+        has_animal_yield = False
+
         for pos in unlocked:
             tx, ty = pos
             if ty >= len(tiles) or tx >= len(tiles[ty]):
@@ -37,8 +45,10 @@ class AgentPlanner:
                 empty_count += 1
             elif isinstance(t, dict):
                 kind = t.get("kind")
+
                 if kind == "WEED":
                     weed_count += 1
+
                 elif kind == "PLANT":
                     if not t.get("watered_today", False):
                         unwatered_count += 1
@@ -53,14 +63,36 @@ class AgentPlanner:
                     if crop_age >= first_yield and yield_units > 0:
                         harvestable_count += 1
 
+                elif kind == "COOP":
+                    has_coop = True
+                    if not t.get("animal"):
+                        has_empty_coop = True
+                    else:
+                        if not t.get("fed_today", False):
+                            has_hungry_animal = True
+                        if int(t.get("yield_units", 0)) > 0:
+                            has_animal_yield = True
+
+                elif kind == "PASTURE":
+                    has_pasture = True
+                    if not t.get("animal"):
+                        has_empty_pasture = True
+                    else:
+                        if not t.get("fed_today", False):
+                            has_hungry_animal = True
+                        if int(t.get("yield_units", 0)) > 0:
+                            has_animal_yield = True
+
+        # ------------------------------------------------------------------
         # Build demand priority order based on macro urgency
+        # ------------------------------------------------------------------
         role_demands: List[WorkerRole] = []
 
-        # Urgent Priority 1: Harvesting mature crops (Direct Cash Liquidation)
+        # Priority 1: Harvesting mature crops (Direct Cash Liquidation)
         if harvestable_count > 0:
             role_demands.extend([WorkerRole.HARVESTER] * min(3, harvestable_count))
 
-        # Urgent Priority 2: Watering thirsty crops (Prevent Yield Degradation)
+        # Priority 2: Watering thirsty crops (Prevent Yield Degradation)
         if unwatered_count > 0:
             role_demands.extend([WorkerRole.WATERER] * min(4, unwatered_count))
 
@@ -72,6 +104,32 @@ class AgentPlanner:
         # Priority 4: Clearing weeds
         if weed_count > 0:
             role_demands.extend([WorkerRole.DIGGER] * min(2, weed_count))
+
+        # ------------------------------------------------------------------
+        # Priority 5: Animal care — BUILD / PLACE / FEED
+        # ------------------------------------------------------------------
+        shed = getattr(state, "shed", {}) or {}
+        has_goose_in_shed = shed.get("GOOSE", 0) > 0
+        has_cow_in_shed = shed.get("COW", 0) > 0
+        has_sheep_in_shed = shed.get("SHEEP", 0) > 0
+
+        need_build_coop = has_goose_in_shed and not has_coop
+        need_build_pasture = (has_cow_in_shed or has_sheep_in_shed) and not has_pasture
+        need_build = need_build_coop or need_build_pasture
+
+        need_place = (has_empty_coop and has_goose_in_shed) or (
+            has_empty_pasture and (has_cow_in_shed or has_sheep_in_shed)
+        )
+
+        need_feed = has_hungry_animal or has_animal_yield
+
+        if need_build or need_place or need_feed:
+            if need_feed:
+                role_demands.insert(0, WorkerRole.ANIMAL)   # paling urgent
+            if need_place:
+                role_demands.append(WorkerRole.ANIMAL)
+            if need_build:
+                role_demands.append(WorkerRole.ANIMAL)
 
         # Fallback to VERSATILE if no specific dominant demand
         if not role_demands:

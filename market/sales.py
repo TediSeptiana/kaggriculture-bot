@@ -43,48 +43,21 @@ class SalesManager:
         )
 
     def plan_sales_orders(self, state: FarmState) -> List[MarketOrder]:
-        """Generates SELL market orders for items stored in shed."""
-        orders: List[MarketOrder] = []
-        total_shed_items = sum(state.shed.values())
-        shed_pressure = total_shed_items / float(self.SHED_CAPACITY)
-        sell_urgency_threshold = 0.2 if shed_pressure > 0.7 else 0.0
-
-        wheat_reserve = self._wheat_reserve(state)
-
+        orders = []
+        # Paksa jual semua di 2 hari terakhir
+        force_sell_all = state.day >= (self.TOTAL_SEASON_DAYS - 2)
+        
         for item, count in state.shed.items():
             if count <= 0 or item.endswith("_SEED"):
                 continue
-
+            if item in ("GOOSE", "COW", "SHEEP"):
+                continue  # animal hidup jangan dijual
+            
             item_price = state.market_prices.get(item, 0.0)
-
-            # FIX: wheat — sisakan untuk pakan
-            if item == "WHEAT":
-                # Jual hanya kelebihannya, dan JANGAN di bawah LIQUIDATE_DAY kecuali pressure tinggi
-                sellable = max(0, count - wheat_reserve)
-                if sellable <= 0:
-                    continue
-                # Kalau belum liquidate day dan pressure normal, jual pelan-pelan
-                if state.day < self.LIQUIDATE_DAY and shed_pressure <= 0.9:
-                    orders.append(["SELL", "WHEAT", min(sellable, 5)])
-                else:
-                    orders.append(["SELL", "WHEAT", sellable])
-                continue
-
-            # Preserve high-value recurring products while prices are rising.
-            if item in self.HOLD_PRODUCTS and state.day < self.LIQUIDATE_DAY:
-                if shed_pressure <= 0.90:
-                    continue
-                count = max(1, count - int(self.SHED_CAPACITY * 0.75))
-
-            base_price = {"WHEAT": 25.0, "CARROT": 35.0, "TOMATO": 60.0,
-                          "STRAWBERRY": 120.0, "MELON": 250.0}.get(item, 0.0)
-            price_is_rising = base_price > 0 and item_price >= base_price * self.HOLD_MULTIPLIER
-            if state.day < self.LIQUIDATE_DAY and price_is_rising and shed_pressure <= 0.90:
-                continue
-
-            if item_price > 0 or sell_urgency_threshold > 0:
-                orders.append(
-                    ["SELL", item, min(count, 10) if state.day < self.LIQUIDATE_DAY else count]
-                )
-
+            
+            if force_sell_all:
+                orders.append(["SELL", item, count])
+            elif item_price > 0:
+                # Jual semua jika price di atas 80% peak (bisa cek rolling max)
+                orders.append(["SELL", item, count])
         return orders
