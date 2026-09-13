@@ -29,7 +29,7 @@ class LandManager:
     CASH_BUFFER: float = 1500.0
 
     # FIX: dinaikkan dari 3 → 8 hari
-    MIN_DAYS_REMAINING: int = 8
+    MIN_DAYS_REMAINING: int = 12
 
     # FIX BARU: cash minimum multiplier — cegah beli land saat cash tipis
     # Land $2K butuh $2K * 2.5 + $1.5K buffer = $6.5K
