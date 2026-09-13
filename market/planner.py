@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, List, Union
+from market.animal import AnimalManager
 from market.hiring import HiringManager, get_fibonacci_cost
 from market.land import LandManager
 from market.sales import SalesManager
@@ -13,11 +14,10 @@ MarketOrder = List[Union[str, int]]
 
 
 class MarketPlanner:
-    """Facade orchestrator coordinating labor, sales, land, and seed managers."""
+    """Facade orchestrator coordinating labor, sales, land, seed, and animal managers."""
 
     MAX_ORDERS_PER_TURN: int = 10
     TOTAL_SEASON_DAYS: int = 30
-    ANIMAL_TARGETS = {"GOOSE": 20, "COW": 4, "SHEEP": 0}
 
     def __init__(self, emergency_reserve: float = 300.0) -> None:
         self.emergency_reserve = emergency_reserve
@@ -25,7 +25,7 @@ class MarketPlanner:
         self.sales_manager = SalesManager()
         self.land_manager = LandManager()
         self.seed_manager = SeedManager()
-        self.pending_animal: str | None = None
+        self.animal_manager = AnimalManager()
 
     def get_disposable_cash(self, state: FarmState) -> float:
         """Calculates available liquid capital above the safety reserve buffer."""
@@ -37,61 +37,48 @@ class MarketPlanner:
         orders: List[MarketOrder] = []
         disposable_cash = self.get_disposable_cash(state)
 
-        # Early expansion compounds production. These orders are intentionally
-        # phase-gated so land and animals do not consume the emergency reserve.
+        # ------------------------------------------------------------------
+        # 1. LAND EXPANSION (phase-gated)
+        # ------------------------------------------------------------------
         if state.day <= 15:
             target_quad = ("NE", 1000.0, 3), ("SW", 2000.0, 7), ("SE", 4000.0, 11)
             for quadrant, cost, deadline in target_quad:
                 if quadrant not in state.unlocked_quadrants and state.day >= deadline:
-                    if state.money >= cost + self.emergency_reserve:
+                    # FIX: butuh buffer 2x cost supaya tidak stranded
+                    if state.money >= cost * 2 + self.emergency_reserve:
                         orders.append(["BUY_LAND"])
                         disposable_cash -= cost
                     break
 
-        # Goose first for daily egg income, then a small milk buffer. Animals
-        # are bought only after a matching empty structure exists; BUILD/PLACE
-        # are worker actions and must never be put in the market queue.
-        animal_counts = {"GOOSE": 0, "COW": 0, "SHEEP": 0}
-        empty_coops = 0
-        empty_pastures = 0
-        for row in state.tiles:
-            for tile in row:
-                if isinstance(tile, dict) and tile.get("kind") in {"COOP", "PASTURE"}:
-                    kind = tile.get("kind")
-                    if not tile.get("animal"):
-                        if kind == "COOP":
-                            empty_coops += 1
-                        else:
-                            empty_pastures += 1
-                    animal = str(tile.get("animal", "")).upper()
-                    if animal in animal_counts:
-                        animal_counts[animal] += 1
-        animal_counts["GOOSE"] += state.shed.get("GOOSE", 0)
-        animal_counts["COW"] += state.shed.get("COW", 0)
-        if state.day <= 22:
-            if self.pending_animal is None and empty_coops > 0 and state.shed.get("GOOSE", 0) == 0 and animal_counts["GOOSE"] < 20 and disposable_cash >= 400:
-                orders.append(["BUY_ANIMAL", "GOOSE", 1])
-                disposable_cash -= 400
-            elif self.pending_animal is None and 9 <= state.day <= 22 and empty_pastures > 0 and state.shed.get("COW", 0) == 0 and animal_counts["COW"] < 4 and disposable_cash >= 400:
-                orders.append(["BUY_ANIMAL", "COW", 1])
-                disposable_cash -= 400
+        # ------------------------------------------------------------------
+        # 2. ANIMAL PURCHASES (delegated to AnimalManager)
+        # ------------------------------------------------------------------
+        animal_orders, animal_cost = self.animal_manager.plan_animal_orders(
+            state, disposable_cash
+        )
+        orders.extend(animal_orders)
+        disposable_cash = max(0.0, disposable_cash - animal_cost)
 
-        # 1. Dispatch Labor Hiring Orders (Optimized by MDEV)
+        # ------------------------------------------------------------------
+        # 3. HIRING
+        # ------------------------------------------------------------------
         hiring_orders = self.hiring_manager.plan_hiring_orders(state)
         orders.extend(hiring_orders)
 
-        # Deduct actual planned hiring expenditure from disposable cash
-        # Evaluasi biaya Fibonacci untuk setiap order HIRE yang dikeluarkan
         current_hires = state.hires_today
         for _ in hiring_orders:
             current_hires += 1
-            cost = get_fibonacci_cost(current_hires, self.hiring_manager.farm_hand_cost_mult)
+            cost = get_fibonacci_cost(
+                current_hires, self.hiring_manager.farm_hand_cost_mult
+            )
             disposable_cash = max(0.0, disposable_cash - cost)
 
-        # 2. Dispatch Sales Orders (Liquidates produce to increase cash)
+        # ------------------------------------------------------------------
+        # 4. SALES (liquidate produce)
+        # ------------------------------------------------------------------
         sales_orders = self.sales_manager.plan_sales_orders(state)
         orders.extend(sales_orders)
-        # Setelah sales_orders ditambahkan, estimasi proceeds:
+
         sales_proceeds = sum(
             state.market_prices.get(item, 0.0) * count
             for item, count in state.shed.items()
@@ -99,15 +86,18 @@ class MarketPlanner:
         )
         disposable_cash += sales_proceeds
 
-
-        # 3. Dispatch Land Expansion Orders
+        # ------------------------------------------------------------------
+        # 5. LAND (fallback)
+        # ------------------------------------------------------------------
         if not any(order == ["BUY_LAND"] for order in orders):
             land_orders, disposable_cash = self.land_manager.plan_land_orders(
                 state, disposable_cash
             )
             orders.extend(land_orders)
 
-        # 4. Dispatch Seed Procurement Orders
+        # ------------------------------------------------------------------
+        # 6. SEEDS
+        # ------------------------------------------------------------------
         seed_orders = self.seed_manager.plan_seed_orders(state, disposable_cash)
         orders.extend(seed_orders)
 

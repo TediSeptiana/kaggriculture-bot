@@ -44,18 +44,15 @@ class TaskEvaluator:
                     isinstance(tile, dict) and tile.get("kind") == "PASTURE"
                     for row in tiles for tile in row
                 )
-                # FIX: cek isi shed
                 has_cow_or_sheep = (
                     state.shed.get("COW", 0) > 0 or state.shed.get("SHEEP", 0) > 0
                 )
                 has_goose = state.shed.get("GOOSE", 0) > 0
 
-                # Prioritas pasture kalau ada cow/sheep
                 if has_cow_or_sheep and not has_pasture:
                     return ["BUILD_PASTURE"]
                 if has_goose and not has_coop:
                     return ["BUILD_COOP"]
-                # FIX: kalau tidak ada animal, JANGAN build
                 return None
 
         # ============================================================
@@ -63,7 +60,6 @@ class TaskEvaluator:
         # ============================================================
         if role_type in {"ANIMAL", "PLACE"}:
             if state.is_shed_adjacent(unit_pos):
-                # FIX: tambah SHEEP
                 if not carried("GOOSE") and state.shed.get("GOOSE", 0) > 0:
                     return ["PICKUP", "GOOSE", 1]
                 if not carried("COW") and state.shed.get("COW", 0) > 0:
@@ -72,7 +68,7 @@ class TaskEvaluator:
                     return ["PICKUP", "SHEEP", 1]
 
         # ============================================================
-        # PLACE animal ke struktur — FIX: PASTURE untuk cow/sheep
+        # PLACE animal ke struktur
         # ============================================================
         if role_type in {"ANIMAL", "PLACE"}:
             if isinstance(current_tile, dict):
@@ -80,7 +76,6 @@ class TaskEvaluator:
                 if not current_tile.get("animal"):
                     if kind == "COOP" and carried("GOOSE"):
                         return ["PLACE", "GOOSE"]
-                    # FIX: cow/sheep HARUS ke PASTURE
                     if kind == "PASTURE":
                         if carried("COW"):
                             return ["PLACE", "COW"]
@@ -88,20 +83,38 @@ class TaskEvaluator:
                             return ["PLACE", "SHEEP"]
 
         # ============================================================
-        # FEED — FIX: handler baru
+        # FEED — FIX: preemptive pickup wheat dari shed
+        # Worker spawn di shed, jadi pickup harus trigger SEBELUM
+        # worker jalan ke coop.
         # ============================================================
         if role_type == "FEED":
+            # Cek apakah ada animal lapar di farm
+            has_hungry_animal = any(
+                isinstance(t, dict)
+                and t.get("kind") in ("COOP", "PASTURE")
+                and t.get("animal")
+                and not t.get("fed_today", False)
+                for row in tiles for t in row
+            )
+
+            # PREEMPTIVE: kalau di shed, tidak bawa wheat, ada yang lapar
+            # → pickup wheat dulu
+            if (
+                has_hungry_animal
+                and not carried("WHEAT")
+                and state.is_shed_adjacent(unit_pos)
+                and state.shed.get("WHEAT", 0) > 0
+            ):
+                return ["PICKUP", "WHEAT", 5]
+
+            # Kalau bawa wheat dan berdiri di coop dengan hungry animal → FEED
             if isinstance(current_tile, dict) and current_tile.get("kind") in {"COOP", "PASTURE"}:
                 if current_tile.get("animal") and not current_tile.get("fed_today", False):
-                    # Butuh wheat di inventory
                     if carried("WHEAT"):
                         return ["FEED"]
-                    # Atau ambil wheat dari shed kalau adjacent
-                    if state.is_shed_adjacent(unit_pos) and state.shed.get("WHEAT", 0) > 0:
-                        return ["PICKUP", "WHEAT", 1]
 
         # ============================================================
-        # COLLECT_FERTILIZER — FIX: handler baru
+        # COLLECT_FERTILIZER
         # ============================================================
         if role_type == "COLLECT_FERTILIZER":
             if isinstance(current_tile, dict) and current_tile.get("kind") in {"COOP", "PASTURE"}:
@@ -109,7 +122,7 @@ class TaskEvaluator:
                     return ["COLLECT_FERTILIZER"]
 
         # ============================================================
-        # CARE — FIX: handler baru
+        # CARE
         # ============================================================
         if role_type == "CARE":
             if isinstance(current_tile, dict) and current_tile.get("kind") in {"COOP", "PASTURE"}:
@@ -117,9 +130,8 @@ class TaskEvaluator:
                     return ["CARE"]
 
         # ============================================================
-        # DROP inventory — FIX: hanya kalau inventory PENUH atau tidak ada task lain
+        # DROP inventory
         # ============================================================
-        # Cek dulu apakah ada task produktif di tile ini
         has_productive_task = False
         if isinstance(current_tile, dict):
             k = current_tile.get("kind")
@@ -140,7 +152,7 @@ class TaskEvaluator:
             len(inventory) > 0
             and state.is_shed_adjacent(unit_pos)
             and not (carried("GOOSE") or carried("COW") or carried("SHEEP") or carried("WHEAT"))
-            and not has_productive_task  # FIX: jangan drop kalau masih bisa kerja
+            and not has_productive_task
         ):
             return ["DROP"]
 
@@ -179,7 +191,7 @@ class TaskEvaluator:
                 return ["WATER"]
 
         # ============================================================
-        # HARVEST — FIX: lebih fleksibel, tetap cek maturity
+        # HARVEST
         # ============================================================
         if role_type == "HARVEST" and isinstance(current_tile, dict):
             if current_tile.get("kind") == "PLANT":
@@ -188,11 +200,9 @@ class TaskEvaluator:
                 planted_day = int(current_tile.get("planted_day", 0))
                 crop_age = state.day - planted_day
                 spec = CROP_SPECS.get(crop)
-
                 first_yield = spec.first_yield_day if spec else 2
                 if crop_age >= first_yield and yield_units > 0:
                     return ["HARVEST"]
-            # Animal harvest
             if current_tile.get("kind") in {"COOP", "PASTURE"}:
                 if current_tile.get("animal") and int(current_tile.get("yield_units", 0)) > 0:
                     return ["HARVEST"]

@@ -108,6 +108,11 @@ class SeedManager:
         """Generates sorted list of BUY_SEED orders based on utility scores."""
         orders: List[MarketOrder] = []
 
+        # FIX: hanya beli seed di turn pertama setiap hari (hour == 0)
+        # Ini mencegah beli 3 seed × 24 turn = 72 seed/hari
+        if state.hour != 0:
+            return orders
+
         # FIX 1: reserve cash dulu
         available = max(0.0, disposable_cash - self.MIN_CASH_RESERVE)
         if available < 10.0:
@@ -127,7 +132,7 @@ class SeedManager:
             return orders
 
         # FIX 5: stop beli kalau late game (hewan lebih penting)
-        if state.day >= 25:
+        if state.day >= 18:
             return orders
 
         seed_scores: List[Tuple[float, str, CropSpec]] = []

@@ -87,25 +87,86 @@ class AgentPlanner:
             self.market_planner.pending_animal = None
         self.last_day = state.day
 
-        # 1. Market Queue Planning (Orders executed sequentially)
+        # ------------------------------------------------------------------
+        # 1. Market Queue Planning
+        # ------------------------------------------------------------------
         market_actions = self.market_planner.plan_orders(state)
 
+        # ------------------------------------------------------------------
         # 2. Dynamic Macro Demand Assessment
+        # ------------------------------------------------------------------
         demand_roles = self._assess_global_farm_demand(state)
 
         # Prevent multiple units from selecting the same tile during this turn.
         assigned_targets: Set[Pos] = set()
 
-        # 3. Main Farmer Execution (Unit ID: 0)
-        farmer_inv = state.inventories[0] if len(state.inventories) > 0 else []
-        if self.pending_animal:
-            farmer_inv = list(farmer_inv) + [{self.pending_animal: 1}]
+        # ------------------------------------------------------------------
+        # 3. Animal work state (dipakai farmer & hands)
+        # ------------------------------------------------------------------
         has_coop = any(
             isinstance(tile, dict) and tile.get("kind") == "COOP"
             for row in state.tiles for tile in row
         )
-        waiting_animal = state.shed.get("GOOSE", 0) > 0 or state.shed.get("COW", 0) > 0
-        farmer_role = WorkerRole.ANIMAL if self.pending_animal or waiting_animal or not has_coop else (demand_roles[0] if demand_roles else WorkerRole.DIGGER)
+        has_pasture = any(
+            isinstance(tile, dict) and tile.get("kind") == "PASTURE"
+            for row in state.tiles for tile in row
+        )
+        has_empty_coop = any(
+            isinstance(tile, dict)
+            and tile.get("kind") == "COOP"
+            and not tile.get("animal")
+            for row in state.tiles for tile in row
+        )
+        has_empty_pasture = any(
+            isinstance(tile, dict)
+            and tile.get("kind") == "PASTURE"
+            and not tile.get("animal")
+            for row in state.tiles for tile in row
+        )
+
+        shed_goose = state.shed.get("GOOSE", 0)
+        shed_cow = state.shed.get("COW", 0)
+        waiting_animal = shed_goose > 0 or shed_cow > 0
+
+        has_hungry_animal = any(
+            isinstance(tile, dict)
+            and tile.get("kind") in ("COOP", "PASTURE")
+            and tile.get("animal")
+            and not tile.get("fed_today", False)
+            for row in state.tiles for tile in row
+        )
+        has_animal_yield = any(
+            isinstance(tile, dict)
+            and tile.get("kind") in ("COOP", "PASTURE")
+            and tile.get("animal")
+            and int(tile.get("yield_units", 0)) > 0
+            for row in state.tiles for tile in row
+        )
+
+        # ------------------------------------------------------------------
+        # 4. Main Farmer Execution (Unit ID: 0)
+        # FIX: Farmer hanya ANIMAL saat TRANSISI (pickup/place), bukan terus-menerus
+        # ------------------------------------------------------------------
+        farmer_inv = state.inventories[0] if len(state.inventories) > 0 else []
+        if self.pending_animal:
+            farmer_inv = list(farmer_inv) + [{self.pending_animal: 1}]
+
+        # Farmer jadi ANIMAL HANYA kalau:
+        #   - sedang bawa animal (pickup → place)
+        #   - ada animal di shed tapi belum ada struktur untuk place
+        farmer_needs_animal = (
+            self.pending_animal is not None
+            or (shed_goose > 0 and not has_coop)
+            or (shed_goose > 0 and has_empty_coop)
+            or (shed_cow > 0 and not has_pasture)
+            or (shed_cow > 0 and has_empty_pasture)
+        )
+
+        farmer_role = (
+            WorkerRole.ANIMAL
+            if farmer_needs_animal
+            else (demand_roles[0] if demand_roles else WorkerRole.DIGGER)
+        )
 
         farmer_action = self.worker_planner.decide_action(
             unit_pos=state.farmer_pos,
@@ -114,6 +175,8 @@ class AgentPlanner:
             role=farmer_role,
             assigned_targets=assigned_targets,
         )
+
+        # Update pending_animal state
         if farmer_action and farmer_action[0] == "PICKUP":
             self.pending_animal = str(farmer_action[1])
             self.market_planner.pending_animal = self.pending_animal
@@ -121,7 +184,20 @@ class AgentPlanner:
             self.pending_animal = None
             self.market_planner.pending_animal = None
 
-        # 4. Hired Hands Execution (Unit IDs: 1..N)
+        # ------------------------------------------------------------------
+        # 5. Hired Hands Execution (Unit IDs: 1..N)
+        # FIX: Hand ke-4 (idx 3) jadi ANIMAL specialist
+        # ------------------------------------------------------------------
+        # Apakah ada pekerjaan animal yang perlu hand?
+        animal_work_available = (
+            has_hungry_animal
+            or has_animal_yield
+            or (shed_goose > 0 and has_empty_coop)
+            or (shed_cow > 0 and has_empty_pasture)
+            or (shed_goose > 0 and not has_coop)
+            or (shed_cow > 0 and not has_pasture)
+        )
+
         hands_actions: List[List[Any]] = []
         for idx, hand_pos in enumerate(state.hands_pos):
             hand_unit_id = idx + 1
@@ -131,9 +207,15 @@ class AgentPlanner:
                 else []
             )
 
-            # Assign role dynamically based on macro farm demand
-            role_idx = (idx + 1) % len(demand_roles)
-            assigned_role = demand_roles[role_idx]
+            # FIX: hand idx 3 = animal specialist
+            if idx == 3 and animal_work_available:
+                assigned_role = WorkerRole.ANIMAL
+            elif idx == 3:
+                # Tidak ada animal work, tapi hand ke-4 ada → VERSATILE
+                assigned_role = WorkerRole.VERSATILE
+            else:
+                role_idx = (idx + 1) % len(demand_roles)
+                assigned_role = demand_roles[role_idx]
 
             hand_act = self.worker_planner.decide_action(
                 unit_pos=hand_pos,

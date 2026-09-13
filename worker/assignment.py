@@ -19,7 +19,7 @@ class TaskAssigner:
         WorkerRole.PLANTER: ["HARVEST", "WATER", "PLANT", "DIG"],
         WorkerRole.WATERER: ["HARVEST", "WATER", "DIG", "PLANT"],
         WorkerRole.HARVESTER: ["HARVEST", "WATER", "PLANT", "DIG"],
-        WorkerRole.ANIMAL: ["HARVEST", "FEED", "PLACE", "BUILD", "WATER", "PLANT", "DIG"],
+        WorkerRole.ANIMAL: ["FEED", "PLACE", "BUILD", "COLLECT_FERTILIZER", "HARVEST", "WATER", "PLANT", "DIG"],
         WorkerRole.VERSATILE: ["HARVEST", "WATER", "PLANT", "DIG"],
     }
 
