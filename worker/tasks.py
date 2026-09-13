@@ -78,6 +78,10 @@ class TaskEvaluator:
                 # ============================================================
         # ANIMAL — prioritas FEED dulu (animal bisa mati kalau tidak di-feed)
         # ============================================================
+        
+                # ============================================================
+        # ANIMAL — prioritas: FEED (mencegah kematian) > COLLECT (mencegah waste) > FERTILIZER
+        # ============================================================
         if role_type == "ANIMAL":
             has_hungry_animal = any(
                 isinstance(t, dict)
@@ -87,7 +91,7 @@ class TaskEvaluator:
                 for row in tiles for t in row
             )
 
-            # Preemptive pickup wheat dari shed
+            # Preemptive pickup wheat dari shed jika ada hewan lapar
             if (
                 has_hungry_animal
                 and not carried("WHEAT")
@@ -99,15 +103,15 @@ class TaskEvaluator:
             if isinstance(current_tile, dict) and current_tile.get("kind") in ("COOP", "PASTURE"):
                 animal = current_tile.get("animal")
                 if animal:
-                    # PRIORITAS 1: FEED — animal mati kalau tidak di-feed
                     if not current_tile.get("fed_today", False) and carried("WHEAT"):
                         return ["FEED"]
-                    # PRIORITAS 2: COLLECT egg/milk/wool
                     if int(current_tile.get("yield_units", 0)) > 0:
                         return ["COLLECT"]
-                    # PRIORITAS 3: COLLECT fertilizer
                     if current_tile.get("fertilizer_available", False):
                         return ["COLLECT_FERTILIZER"]
+
+
+                    
         # PLACE animal ke struktur
         # ============================================================
         if role_type in {"ANIMAL", "PLACE"}:

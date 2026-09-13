@@ -289,6 +289,11 @@ class AgentPlanner:
         # ============================================================
         # 4. Farmer Execution — assign role SEKALI per hari
         # ============================================================
+        # ... (kode sebelumnya tetap sama sampai bagian 4. Farmer Execution) ...
+
+        # ============================================================
+        # 4. Farmer Execution
+        # ============================================================
         farmer_inv = state.inventories[0] if len(state.inventories) > 0 else []
         if self.pending_animal:
             farmer_inv = list(farmer_inv) + [{self.pending_animal: 1}]
@@ -303,7 +308,6 @@ class AgentPlanner:
             or (total_sheep_pending > 0 and has_empty_pasture)
         )
 
-        # FIX: assign farmer role SEKALI per hari
         if 0 not in self.worker_roles:
             if farmer_needs_animal:
                 self.worker_roles[0] = WorkerRole.ANIMAL
@@ -311,10 +315,11 @@ class AgentPlanner:
                 self.worker_roles[0] = demand_roles[0] if demand_roles else WorkerRole.DIGGER
 
         farmer_role = self.worker_roles[0]
-
-        # Override: kalau animal transisi butuh farmer, paksa ANIMAL
         if farmer_needs_animal:
             farmer_role = WorkerRole.ANIMAL
+
+        # 🔥 KUMPULKAN SEMUA POSISI WORKER UNTUK COLLISION AVOIDANCE
+        all_worker_positions = {state.farmer_pos} | set(state.hands_pos)
 
         farmer_action = self.worker_planner.decide_action(
             unit_pos=state.farmer_pos,
@@ -322,6 +327,7 @@ class AgentPlanner:
             inventory=farmer_inv,
             role=farmer_role,
             assigned_targets=assigned_targets,
+            other_worker_positions=all_worker_positions,  # <-- DITAMBAHKAN
         )
 
         if farmer_action and farmer_action[0] == "PICKUP":
@@ -332,7 +338,7 @@ class AgentPlanner:
             self.market_planner.pending_animal = None
 
         # ============================================================
-        # 5. Hands Execution — assign role SEKALI per hari
+        # 5. Hands Execution
         # ============================================================
         animal_work_available = (
             has_hungry_animal
@@ -349,9 +355,7 @@ class AgentPlanner:
         for idx, hand_pos in enumerate(state.hands_pos):
             hand_unit_id = idx + 1
 
-            # FIX: assign role SEKALI per hari
             if hand_unit_id not in self.worker_roles:
-                # Hand idx 3 = animal specialist (kalau tidak urgent harvest)
                 if idx == 3 and animal_work_available and not urgent_harvest:
                     self.worker_roles[hand_unit_id] = WorkerRole.ANIMAL
                 elif idx == 3 and urgent_harvest:
@@ -359,12 +363,10 @@ class AgentPlanner:
                 elif idx == 3:
                     self.worker_roles[hand_unit_id] = WorkerRole.VERSATILE
                 else:
-                    # Round-robin berdasarkan demand
                     role_idx = idx % len(demand_roles)
                     self.worker_roles[hand_unit_id] = demand_roles[role_idx]
 
             assigned_role = self.worker_roles[hand_unit_id]
-
             hand_inv = (
                 state.inventories[hand_unit_id]
                 if hand_unit_id < len(state.inventories)
@@ -377,6 +379,7 @@ class AgentPlanner:
                 inventory=hand_inv,
                 role=assigned_role,
                 assigned_targets=assigned_targets,
+                other_worker_positions=all_worker_positions,  # <-- DITAMBAHKAN
             )
             hands_actions.append(hand_act)
 
