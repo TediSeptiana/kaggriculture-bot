@@ -19,8 +19,19 @@ class TaskAssigner:
         WorkerRole.PLANTER: ["HARVEST", "WATER", "PLANT", "DIG"],
         WorkerRole.WATERER: ["HARVEST", "WATER", "DIG", "PLANT"],
         WorkerRole.HARVESTER: ["HARVEST", "WATER", "PLANT", "DIG"],
-        WorkerRole.ANIMAL: ["FEED", "PLACE", "BUILD", "COLLECT_FERTILIZER", "HARVEST", "WATER", "PLANT", "DIG"],
+        WorkerRole.ANIMAL: [
+            "FEED",
+            "PLACE",
+            "BUILD",
+            "COLLECT_FERTILIZER",
+            "HARVEST",
+            "WATER",
+            "PLANT",
+            "DIG",
+        ],
         WorkerRole.VERSATILE: ["HARVEST", "WATER", "PLANT", "DIG"],
+        # FIX BARU: role FERTILIZE — tugas utama apply fertilizer
+        WorkerRole.FERTILIZE: ["FERTILIZE", "HARVEST", "WATER", "PLANT", "DIG"],
     }
 
     # FIX 2: prioritas crop untuk PLANT (melon > carrot > wheat)
@@ -90,13 +101,11 @@ class TaskAssigner:
                 isinstance(tile, dict) and tile.get("kind") == "PASTURE"
                 for row in state.tiles for tile in row
             )
-            # build coop hanya kalau ada goose di shed
             needs_coop = (
                 not has_coop
                 and state.shed.get("GOOSE", 0) > 0
                 and t is None
             )
-            # build pasture hanya kalau ada cow/sheep
             needs_pasture = (
                 not has_pasture
                 and (state.shed.get("COW", 0) > 0 or state.shed.get("SHEEP", 0) > 0)
@@ -105,7 +114,11 @@ class TaskAssigner:
             return needs_coop or needs_pasture
 
         if task_type == "WATER":
-            return isinstance(t, dict) and t.get("kind") == "PLANT" and not t.get("watered_today", False)
+            return (
+                isinstance(t, dict)
+                and t.get("kind") == "PLANT"
+                and not t.get("watered_today", False)
+            )
 
         if task_type == "FEED":
             return (
@@ -124,9 +137,33 @@ class TaskAssigner:
                 spec = CROP_SPECS.get(crop)
                 first_yield = spec.first_yield_day if spec else 2
                 return crop_age >= first_yield and yield_units > 0
-            # animal harvest
+            # animal harvest (egg/milk/wool)
             if isinstance(t, dict) and t.get("kind") in {"COOP", "PASTURE"}:
                 return int(t.get("yield_units", 0)) > 0
+
+        # FIX BARU: validasi tile untuk FERTILIZE
+        # Hanya crop premium di bonus window yang belum di-fertilize
+        if task_type == "FERTILIZE":
+            if not isinstance(t, dict) or t.get("kind") != "PLANT":
+                return False
+            crop = str(t.get("crop", ""))
+            spec = CROP_SPECS.get(crop)
+            if spec is None:
+                return False
+            # Hanya crop premium yang layak fertilizer
+            if crop not in ("MELON", "STRAWBERRY", "TOMATO"):
+                return False
+            planted_day = int(t.get("planted_day", 0))
+            age = state.day - planted_day
+            fert_until = int(t.get("fertilized_until_day", -1))
+            # Sudah di-fertilize? Skip
+            if fert_until >= state.day:
+                return False
+            # Di bonus window?
+            bonus_start = (spec.max_yield_day + 1) // 2
+            if not (bonus_start <= age <= spec.max_yield_day):
+                return False
+            return True
 
         return False
 
@@ -156,14 +193,13 @@ class TaskAssigner:
                 and cls.is_target_still_valid(current_committed_target, state, role)
             ):
                 # FIX 6: cek apakah ada HARVEST mendesak di committed
-                # Kalau committed bukan harvest tapi ada harvest di dekat, pindah
                 committed_is_harvest = cls.is_tile_valid_for_task(
                     current_committed_target, state, "HARVEST"
                 )
                 if committed_is_harvest:
                     return current_committed_target, "HARVEST"
 
-                # Cari harvest terdekat — kalau lebih dekat dari committed, pindah
+                # Cari harvest terdekat
                 unlocked_positions = state.get_unlocked_tiles()
                 best_harvest = None
                 best_harvest_dist = 9999
@@ -176,23 +212,26 @@ class TaskAssigner:
                             best_harvest_dist = d
                             best_harvest = pos
 
-                committed_dist = PathFinder.manhattan_distance(unit_pos, current_committed_target)
+                committed_dist = PathFinder.manhattan_distance(
+                    unit_pos, current_committed_target
+                )
                 if best_harvest is not None and best_harvest_dist <= committed_dist:
                     return best_harvest, "HARVEST"
 
                 # Kalau tidak ada harvest mendesak, tetap ke committed
-                task_order = cls.ROLE_HIERARCHY.get(role, ["HARVEST", "WATER", "PLANT", "DIG"])
+                task_order = cls.ROLE_HIERARCHY.get(
+                    role, ["HARVEST", "WATER", "PLANT", "DIG"]
+                )
                 for task_type in task_order:
                     if cls.is_tile_valid_for_task(current_committed_target, state, task_type):
                         return current_committed_target, task_type
 
-        # 2. Cari target baru
+        # 2. Cari target baru dengan scoring
         unlocked_positions = state.get_unlocked_tiles()
         task_order = cls.ROLE_HIERARCHY.get(role, ["HARVEST", "WATER", "PLANT", "DIG"])
 
         for task_type in task_order:
-            best_target: Optional[Pos] = None
-            min_dist = 9999
+            candidates: List[Tuple[int, int, Pos]] = []
 
             for pos in unlocked_positions:
                 if pos in assigned_targets:
@@ -200,11 +239,25 @@ class TaskAssigner:
 
                 if cls.is_tile_valid_for_task(pos, state, task_type):
                     d = PathFinder.manhattan_distance(unit_pos, pos)
-                    if d < min_dist:
-                        min_dist = d
-                        best_target = pos
 
-            if best_target is not None:
+                    # FIX BARU: prioritas MELON untuk FERTILIZE
+                    if task_type == "FERTILIZE":
+                        t = state.tiles[pos[1]][pos[0]]
+                        crop = str(t.get("crop", "")) if isinstance(t, dict) else ""
+                        if crop == "MELON":
+                            prio = 0  # paling prioritas
+                        elif crop == "STRAWBERRY":
+                            prio = 1
+                        else:
+                            prio = 2
+                        candidates.append((prio, d, pos))
+                    else:
+                        candidates.append((0, d, pos))
+
+            if candidates:
+                # Sort by (prioritas, jarak) — prioritas dulu, baru jarak
+                candidates.sort(key=lambda x: (x[0], x[1]))
+                _, _, best_target = candidates[0]
                 return best_target, task_type
 
         return None, None

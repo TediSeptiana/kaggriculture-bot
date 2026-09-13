@@ -94,7 +94,7 @@ class AgentPlanner:
 
         # Priority 2: Watering thirsty crops (Prevent Yield Degradation)
         if unwatered_count > 0:
-            role_demands.extend([WorkerRole.WATERER] * min(4, unwatered_count))
+            role_demands.extend([WorkerRole.WATERER] * min(5, unwatered_count))
 
         # Priority 3: Planting if seeds are available and empty tiles exist
         total_seeds = sum(state.seeds.values())
@@ -131,6 +131,39 @@ class AgentPlanner:
             if need_build:
                 role_demands.append(WorkerRole.ANIMAL)
 
+        # ------------------------------------------------------------------
+        # Priority 6: Fertilizer application ke MELON/STRAWBERRY
+        # ------------------------------------------------------------------
+        has_fertilizer_in_shed = shed.get("FERTILIZER", 0) > 0
+
+        if has_fertilizer_in_shed:
+            need_fertilize = False
+            for row in tiles:
+                for t in row:
+                    if not isinstance(t, dict) or t.get("kind") != "PLANT":
+                        continue
+                    crop = str(t.get("crop", ""))
+                    if crop not in ("MELON", "STRAWBERRY", "TOMATO"):
+                        continue
+                    spec = CROP_SPECS.get(crop)
+                    if spec is None:
+                        continue
+                    planted_day = int(t.get("planted_day", 0))
+                    age = state.day - planted_day
+                    fert_until = int(t.get("fertilized_until_day", -1))
+                    if fert_until >= state.day:
+                        continue
+                    bonus_start = (spec.max_yield_day + 1) // 2
+                    if bonus_start <= age <= spec.max_yield_day:
+                        need_fertilize = True
+                        break
+                if need_fertilize:
+                    break
+
+            if need_fertilize:
+                # Insert di depan karena fertilizer window terbatas (3 hari)
+                role_demands.insert(0, WorkerRole.FERTILIZE)
+
         # Fallback to VERSATILE if no specific dominant demand
         if not role_demands:
             role_demands = [WorkerRole.VERSATILE]
@@ -155,7 +188,6 @@ class AgentPlanner:
         # ------------------------------------------------------------------
         demand_roles = self._assess_global_farm_demand(state)
 
-        # Prevent multiple units from selecting the same tile during this turn.
         assigned_targets: Set[Pos] = set()
 
         # ------------------------------------------------------------------
@@ -203,7 +235,6 @@ class AgentPlanner:
 
         # ------------------------------------------------------------------
         # 3b. Harvest urgency untuk keputusan hand idx 3
-        # Kalau banyak crop siap panen, JANGAN korbankan 1 hand untuk animal
         # ------------------------------------------------------------------
         harvestable_crops = 0
         for row in state.tiles:
@@ -219,12 +250,10 @@ class AgentPlanner:
                     if crop_age >= first_yield:
                         harvestable_crops += 1
 
-        # Threshold: kalau >= 3 crop siap panen, semua hand bantu harvest
         urgent_harvest = harvestable_crops >= 3
 
         # ------------------------------------------------------------------
         # 4. Main Farmer Execution (Unit ID: 0)
-        # Farmer jadi ANIMAL hanya saat transisi (pickup/place)
         # ------------------------------------------------------------------
         farmer_inv = state.inventories[0] if len(state.inventories) > 0 else []
         if self.pending_animal:
@@ -261,10 +290,7 @@ class AgentPlanner:
             self.market_planner.pending_animal = None
 
         # ------------------------------------------------------------------
-        # 5. Hired Hands Execution (Unit IDs: 1..N)
-        # FIX: Hand ke-4 (idx 3) jadi ANIMAL specialist HANYA jika
-        #      tidak ada urgent harvest. Kalau banyak crop matang,
-        #      semua hand fokus harvest.
+        # 5. Hired Hands Execution
         # ------------------------------------------------------------------
         animal_work_available = (
             has_hungry_animal
@@ -275,6 +301,11 @@ class AgentPlanner:
             or (shed_cow > 0 and not has_pasture)
         )
 
+        # FIX BARU: cek FERTILIZE coverage
+        fert_pending = WorkerRole.FERTILIZE in demand_roles
+        fert_taken_by_farmer = (farmer_role == WorkerRole.FERTILIZE)
+        fert_still_needed = fert_pending and not fert_taken_by_farmer
+
         hands_actions: List[List[Any]] = []
         for idx, hand_pos in enumerate(state.hands_pos):
             hand_unit_id = idx + 1
@@ -284,16 +315,16 @@ class AgentPlanner:
                 else []
             )
 
-            # Hand idx 3 jadi ANIMAL HANYA jika:
-            #   - ada animal work
-            #   - DAN tidak ada urgent harvest
-            if idx == 3 and animal_work_available and not urgent_harvest:
+            # FIX BARU: hand idx 0 ambil FERTILIZE kalau farmer tidak bisa,
+            #             TAPI hanya kalau tidak ada urgent harvest
+            if fert_still_needed and idx == 0 and not urgent_harvest:
+                assigned_role = WorkerRole.FERTILIZE
+                fert_still_needed = False
+            elif idx == 3 and animal_work_available and not urgent_harvest:
                 assigned_role = WorkerRole.ANIMAL
             elif idx == 3 and urgent_harvest:
-                # Ada crop matang banyak → bantu harvest
                 assigned_role = WorkerRole.HARVESTER
             elif idx == 3:
-                # Tidak ada animal work DAN tidak urgent harvest
                 assigned_role = WorkerRole.VERSATILE
             else:
                 role_idx = (idx + 1) % len(demand_roles)

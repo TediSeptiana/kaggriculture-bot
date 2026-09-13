@@ -2,3 +2,4 @@ replay.json
 __pycache__/
 logg/
 overvies
+**.pyc

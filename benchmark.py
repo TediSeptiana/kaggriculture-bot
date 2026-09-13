@@ -696,4 +696,4 @@ def run_benchmark(num_matches: int = 10, opponent: str = "starter") -> None:
 
 
 if __name__ == "__main__":
-    run_benchmark(num_matches=20, opponent="starter")
+    run_benchmark(num_matches=100, opponent="starter")

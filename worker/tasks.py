@@ -121,6 +121,30 @@ class TaskEvaluator:
                         return ["FEED"]
 
         # ============================================================
+        # FERTILIZE — apply fertilizer ke tanaman (MELON + STRAWBERRY)
+        # ============================================================
+        if role_type == "FERTILIZE":
+            # 1. Pickup fertilizer dari shed jika belum bawa
+            if state.is_shed_adjacent(unit_pos) and not carried("FERTILIZER"):
+                if state.shed.get("FERTILIZER", 0) > 0:
+                    return ["PICKUP", "FERTILIZER", 1]
+
+            # 2. Apply ke tile PLANT di bonus window
+            if isinstance(current_tile, dict) and current_tile.get("kind") == "PLANT":
+                if carried("FERTILIZER"):
+                    crop = str(current_tile.get("crop", ""))
+                    planted_day = int(current_tile.get("planted_day", 0))
+                    age = state.day - planted_day
+                    fert_until = int(current_tile.get("fertilized_until_day", -1))
+                    spec = CROP_SPECS.get(crop)
+
+                    if spec is not None and fert_until < state.day:
+                        # Bonus window: mulai dari ceil(max_yield_day / 2)
+                        bonus_start = (spec.max_yield_day + 1) // 2
+                        if bonus_start <= age <= spec.max_yield_day:
+                            return ["FERTILIZE"]
+
+        # ============================================================
         # FEED — untuk role khusus FEED (fallback ke ANIMAL di atas)
         # ============================================================
         if role_type == "FEED":

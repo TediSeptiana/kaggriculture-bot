@@ -14,3 +14,4 @@ class WorkerRole(Enum):
     RANCHER = auto()   # ← baru: feed & collect animal
     ANIMAL = auto()      # Builds structures and places livestock
     VERSATILE = auto()   # Generic worker fallback
+    FERTILIZE = auto() 
