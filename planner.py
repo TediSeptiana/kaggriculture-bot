@@ -104,14 +104,31 @@ class AgentPlanner:
         if weed_count > 0:
             role_demands.extend([WorkerRole.DIGGER] * min(2, weed_count))
 
-        # Priority 5: Animal care
+        # ------------------------------------------------------------------
+        # Priority 5: Animal care — BUILD_PASTURE / PLACE / FEED
+        # FASE B: fokus cow + sheep (bukan goose)
+        # ------------------------------------------------------------------
         shed = getattr(state, "shed", {}) or {}
-        has_goose_in_shed = shed.get("GOOSE", 0) > 0
-        has_cow_in_shed = shed.get("COW", 0) > 0
-        has_sheep_in_shed = shed.get("SHEEP", 0) > 0
+        # FIX: cek inventory juga untuk trigger BUILD cepat
+        inv_cow = 0
+        inv_sheep = 0
+        inv_goose = 0
+        for inv in state.inventories:
+            if isinstance(inv, list):
+                for entry in inv:
+                    if isinstance(entry, dict):
+                        inv_cow += int(entry.get("COW", 0))
+                        inv_sheep += int(entry.get("SHEEP", 0))
+                        inv_goose += int(entry.get("GOOSE", 0))
+
+        has_goose_in_shed = (shed.get("GOOSE", 0) + inv_goose) > 0
+        has_cow_in_shed = (shed.get("COW", 0) + inv_cow) > 0
+        has_sheep_in_shed = (shed.get("SHEEP", 0) + inv_sheep) > 0
 
         need_build_coop = has_goose_in_shed and not has_coop
-        need_build_pasture = (has_cow_in_shed or has_sheep_in_shed) and not has_pasture
+        need_build_pasture = (
+            (has_cow_in_shed or has_sheep_in_shed) and not has_pasture
+        )
         need_build = need_build_coop or need_build_pasture
 
         need_place = (has_empty_coop and has_goose_in_shed) or (
@@ -121,8 +138,16 @@ class AgentPlanner:
         need_feed = has_hungry_animal or has_animal_yield
 
         if need_build or need_place or need_feed:
+            # FASE B: hitung total animal di farm
+            animal_count = sum(
+                1 for row in tiles for t in row
+                if isinstance(t, dict) and t.get("animal")
+            )
             if need_feed:
                 role_demands.insert(0, WorkerRole.ANIMAL)
+                # FASE B: 2+ animal butuh 2 worker
+                if animal_count >= 2:
+                    role_demands.insert(1, WorkerRole.ANIMAL)
             if need_place:
                 role_demands.append(WorkerRole.ANIMAL)
             if need_build:
@@ -170,6 +195,7 @@ class AgentPlanner:
         # FIX: Reset worker roles di hari baru
         # Roles tetap sama sepanjang hari untuk efisiensi pathfinding
         # ============================================================
+        
         if state.day != self.roles_day:
             self.worker_roles = {}
             self.roles_day = state.day
@@ -207,10 +233,27 @@ class AgentPlanner:
 
         shed_goose = state.shed.get("GOOSE", 0)
         shed_cow = state.shed.get("COW", 0)
+        shed_sheep = state.shed.get("SHEEP", 0)
         has_pasture = any(
             isinstance(tile, dict) and tile.get("kind") == "PASTURE"
             for row in state.tiles for tile in row
         )
+
+        # FIX: hitung animal di inventory juga
+        inventory_cow = 0
+        inventory_sheep = 0
+        inventory_goose = 0
+        for inv in state.inventories:
+            if isinstance(inv, list):
+                for entry in inv:
+                    if isinstance(entry, dict):
+                        inventory_cow += int(entry.get("COW", 0))
+                        inventory_sheep += int(entry.get("SHEEP", 0))
+                        inventory_goose += int(entry.get("GOOSE", 0))
+
+        total_cow_pending = shed_cow + inventory_cow
+        total_sheep_pending = shed_sheep + inventory_sheep
+        total_goose_pending = shed_goose + inventory_goose
 
         has_hungry_animal = any(
             isinstance(tile, dict)
@@ -252,10 +295,12 @@ class AgentPlanner:
 
         farmer_needs_animal = (
             self.pending_animal is not None
-            or (shed_goose > 0 and not has_coop)
-            or (shed_goose > 0 and has_empty_coop)
-            or (shed_cow > 0 and not has_pasture)
-            or (shed_cow > 0 and has_empty_pasture)
+            or (total_goose_pending > 0 and not has_coop)
+            or (total_goose_pending > 0 and has_empty_coop)
+            or (total_cow_pending > 0 and not has_pasture)
+            or (total_cow_pending > 0 and has_empty_pasture)
+            or (total_sheep_pending > 0 and not has_pasture)
+            or (total_sheep_pending > 0 and has_empty_pasture)
         )
 
         # FIX: assign farmer role SEKALI per hari
@@ -292,10 +337,12 @@ class AgentPlanner:
         animal_work_available = (
             has_hungry_animal
             or has_animal_yield
-            or (shed_goose > 0 and has_empty_coop)
-            or (shed_cow > 0 and has_empty_pasture)
-            or (shed_goose > 0 and not has_coop)
-            or (shed_cow > 0 and not has_pasture)
+            or (total_goose_pending > 0 and has_empty_coop)
+            or (total_cow_pending > 0 and has_empty_pasture)
+            or (total_sheep_pending > 0 and has_empty_pasture)
+            or (total_goose_pending > 0 and not has_coop)
+            or (total_cow_pending > 0 and not has_pasture)
+            or (total_sheep_pending > 0 and not has_pasture)
         )
 
         hands_actions: List[List[Any]] = []

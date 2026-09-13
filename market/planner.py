@@ -21,13 +21,8 @@ class MarketPlanner:
 
     DEFAULT_EMERGENCY_RESERVE: float = 200.0
 
-    # Land utilization threshold
-    MIN_LAND_UTILIZATION: float = 2.0
-
-    # FIX: 3x cost buffer (dari 2x) untuk cegah cash crash
+    MIN_LAND_UTILIZATION: float = 0.85
     MIN_LAND_CASH_MULTIPLIER: float = 3.0
-
-    # FIX: minimum cash untuk beli land — cegah death spiral Match 05
     MIN_CASH_FOR_LAND: float = 2000.0
 
     def __init__(self, emergency_reserve: float = DEFAULT_EMERGENCY_RESERVE) -> None:
@@ -42,7 +37,7 @@ class MarketPlanner:
         """Agresif: buffer kecil, boleh pakai 85% cash."""
         if state.money < 100:
             return 0.0
-        spending_cap = state.money * (0.60 if state.day == 0 else 0.85)
+        spending_cap = state.money * (0.75 if state.day == 0 else 0.70)
         return max(0.0, min(state.money - self.emergency_reserve, spending_cap))
 
     def _land_utilization(self, state: FarmState) -> float:
@@ -69,13 +64,11 @@ class MarketPlanner:
         disposable_cash = self.get_disposable_cash(state)
 
         # ------------------------------------------------------------------
-        # 1. LAND EXPANSION (phase-gated + utilisasi + cash guard)
+        # 1. LAND EXPANSION
         # ------------------------------------------------------------------
         if state.day <= 15:
             utilization = self._land_utilization(state)
 
-            # FIX BARU: skip land jika cash < $3000
-            # Cegah death spiral seperti Match 05 ($1.314 cash → beli land $2K → crash)
             if (
                 state.money >= self.MIN_CASH_FOR_LAND
                 and utilization >= self.MIN_LAND_UTILIZATION
@@ -87,7 +80,6 @@ class MarketPlanner:
                 )
                 for quadrant, cost, deadline in target_quad:
                     if quadrant not in state.unlocked_quadrants and state.day >= deadline:
-                        # FIX: buffer 3x cost + reserve
                         required = cost * self.MIN_LAND_CASH_MULTIPLIER + self.emergency_reserve
                         if state.money >= required:
                             orders.append(["BUY_LAND"])
@@ -103,8 +95,48 @@ class MarketPlanner:
         orders.extend(animal_orders)
         disposable_cash = max(0.0, disposable_cash - animal_cost)
 
+        # ============================================================
+        # WHEAT FEED — Beli WHEAT product kalau ada animal di manapun
+        # Prioritas #1: animal harus di-feed setiap hari
+        # ============================================================
+        shed = getattr(state, "shed", {}) or {}
+
+        # Hitung total animal: tile + shed + inventory
+        animal_count = 0
+        # Di tile (pasture/coop)
+        for row in state.tiles:
+            for t in row:
+                if isinstance(t, dict) and t.get("animal"):
+                    animal_count += 1
+        # Di shed
+        animal_count += int(shed.get("COW", 0))
+        animal_count += int(shed.get("SHEEP", 0))
+        animal_count += int(shed.get("GOOSE", 0))
+        # Di inventory worker
+        for inv in getattr(state, "inventories", []) or []:
+            if isinstance(inv, list):
+                for entry in inv:
+                    if isinstance(entry, dict):
+                        animal_count += int(entry.get("COW", 0))
+                        animal_count += int(entry.get("SHEEP", 0))
+                        animal_count += int(entry.get("GOOSE", 0))
+
+        if animal_count > 0:
+            wheat_in_shed = int(shed.get("WHEAT", 0))
+            # Buffer 3 hari feed per animal
+            need_wheat = max(0, animal_count * 3 - wheat_in_shed)
+
+            if need_wheat > 0:
+                wheat_price = state.market_prices.get("WHEAT", 30.0)
+                # Beli kalau cash cukup + buffer $150
+                if state.money > wheat_price * need_wheat + 150:
+                    # Max 10 per turn
+                    buy_qty = min(need_wheat, 10)
+                    orders.append(["BUY_PRODUCT", "WHEAT", buy_qty])
+                    disposable_cash -= wheat_price * buy_qty
+
         # ------------------------------------------------------------------
-        # 3. HIRING
+        # 4. HIRING
         # ------------------------------------------------------------------
         hiring_orders = self.hiring_manager.plan_hiring_orders(state)
         orders.extend(hiring_orders)
@@ -118,7 +150,7 @@ class MarketPlanner:
             disposable_cash = max(0.0, disposable_cash - cost)
 
         # ------------------------------------------------------------------
-        # 4. SALES
+        # 5. SALES
         # ------------------------------------------------------------------
         sales_orders = self.sales_manager.plan_sales_orders(state)
         orders.extend(sales_orders)
@@ -131,7 +163,7 @@ class MarketPlanner:
         disposable_cash += sales_proceeds
 
         # ------------------------------------------------------------------
-        # 5. LAND fallback (dengan guard yang sama)
+        # 6. LAND fallback
         # ------------------------------------------------------------------
         if not any(order == ["BUY_LAND"] for order in orders):
             utilization = self._land_utilization(state)
@@ -145,7 +177,7 @@ class MarketPlanner:
                 orders.extend(land_orders)
 
         # ------------------------------------------------------------------
-        # 6. SEEDS
+        # 7. SEEDS
         # ------------------------------------------------------------------
         seed_orders = self.seed_manager.plan_seed_orders(state, disposable_cash)
         orders.extend(seed_orders)

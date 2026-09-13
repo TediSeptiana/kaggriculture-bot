@@ -85,12 +85,22 @@ class SalesManager:
             # Aturan 2: WHEAT — sisakan untuk pakan HANYA jika masih ada waktu
             # ----------------------------------------------------------
             if item == "WHEAT":
-                if near_end:
-                    sell_qty = count
+                # FIX: hanya jual WHEAT yang benar-benar hasil panen
+                # Kalau count > 100, kemungkinan dari BUY_PRODUCT — jangan jual
+                # Sisakan 15 untuk feed
+                has_animal = any(
+                    isinstance(t, dict) and t.get("animal")
+                    for row in state.tiles for t in row
+                )
+                if count > 100:
+                    # Ada indikasi arbitrase — jual sebagian, sisakan 50
+                    sell_qty = max(0, count - 50)
+                elif has_animal:
+                    sell_qty = max(0, count - 15)
                 else:
-                    sell_qty = max(0, count - wheat_reserve)
+                    sell_qty = count
                 if sell_qty > 0 and item_price > 0:
-                    orders.append(["SELL", item, sell_qty])
+                    orders.append(["SELL", "WHEAT", sell_qty])
                 continue
 
             # ----------------------------------------------------------

@@ -9,34 +9,35 @@ MarketOrder = List[Any]
 
 
 class AnimalManager:
-    """Buy geese and cows based on target count and cash availability."""
+    """Buy cows and sheep based on target count and cash availability."""
 
     ANIMAL_COST: Dict[str, int] = {"GOOSE": 300, "COW": 400, "SHEEP": 500}
 
-    # ----------------------------------------------------------
-    # TARGET — diturunkan drastis karena action economy
-    # 1 goose = ~5 turn/hari (feed + collect + fertilizer + move)
-    # Hari hanya 24 turn, dan masih ada crops yang butuh perhatian
-    # ----------------------------------------------------------
+    # ============================================================
+    # FASE B: Fokus Cow + Sheep (bukan Goose)
+    # Target: 3 Cow + 2 Sheep = 5 animal
+    # ============================================================
     TARGETS: Dict[str, int] = {
-        "GOOSE": 2,    # dari 20 → 2
-        "COW": 0,      # dari 4 → 0 (fokus goose dulu)
-        "SHEEP": 0,
+        "GOOSE": 0,
+        "COW": 4,
+        "SHEEP": 3,
     }
 
-    # Window pembelian — beri waktu animal untuk produksi
+    # Mulai D5 (setelah cash flow stabil), bukan D0
     GOOSE_START_DAY: int = 3
-    GOOSE_END_DAY: int = 12    # dari 20 → 12, agar ada minimal 18 hari produksi
-    COW_START_DAY: int = 8
+    GOOSE_END_DAY: int = 12
+    COW_START_DAY: int = 0
     COW_END_DAY: int = 12
+    SHEEP_START_DAY: int = 5
+    SHEEP_END_DAY: int = 14
 
-    # Reserve — jangan habiskan cash untuk animal
-    MIN_CASH_RESERVE: float = 800.0   # dari 500 → 800
+    # Reserve cash minimum agresif di awal
+    MIN_CASH_RESERVE: float = 200.0
 
-    # Minimal hari tersisa agar animal bisa balik modal
-    # Goose: $300 / ($50 × 0.8) = ~8 hari untuk balik modal
+    # Minimal hari tersisa agar animal balik modal
     MIN_DAYS_TO_RECOVER_GOOSE: int = 10
     MIN_DAYS_TO_RECOVER_COW: int = 12
+    MIN_DAYS_TO_RECOVER_SHEEP: int = 10
 
     def __init__(self, enabled: bool = True) -> None:
         self.enabled = enabled
@@ -102,49 +103,33 @@ class AnimalManager:
             self._count_structures(state)
         )
 
-        # Hari tersisa sampai akhir musim
         total_days = int(getattr(state, "TOTAL_SEASON_DAYS", 30))
         days_left = total_days - day
 
         # ==========================================
-        # GOOSE — butuh empty coop ATAU belum ada coop sama sekali
-        # (kalau belum ada coop, worker BUILD akan bangun dulu)
-        # ==========================================
-        goose_total = self._count_live(state, "GOOSE")
-        goose_in_shed = int(shed.get("GOOSE", 0))
-        goose_cost = self.ANIMAL_COST["GOOSE"]
-
-        # Boleh beli goose kalau:
-        #   - ada empty coop (langsung place), ATAU
-        #   - belum ada coop sama sekali (worker akan BUILD_COOP)
-        has_place_for_goose = empty_coops > 0 or total_coops == 0
-
-        goose_ok = (
-            self.GOOSE_START_DAY <= day <= self.GOOSE_END_DAY
-            and goose_in_shed == 0                              # jangan numpuk di shed
-            and goose_total < self.TARGETS["GOOSE"]
-            and has_place_for_goose
-            and days_left >= self.MIN_DAYS_TO_RECOVER_GOOSE     # cukup waktu balik modal
-            and money >= goose_cost + self.MIN_CASH_RESERVE
-            and disposable_cash >= goose_cost
-        )
-        if goose_ok:
-            orders.append(["BUY_ANIMAL", "GOOSE", 1])
-            total_cost += goose_cost
-            disposable_cash -= goose_cost
-
-        # ==========================================
-        # COW — butuh empty_pasture
+        # COW
         # ==========================================
         cow_total = self._count_live(state, "COW")
         cow_in_shed = int(shed.get("COW", 0))
         cow_cost = self.ANIMAL_COST["COW"]
 
+        # Guard rebuy loop — cek apakah ada cow yang masih hidup
+        cow_placed = sum(
+            1 for row in state.tiles for t in row
+            if isinstance(t, dict) and t.get("animal") == "COW"
+        )
+
+        # Cek apakah butuh pasture baru
+        has_place_for_cow = empty_pastures > 0 or total_pastures == 0
+
+        # Berapa banyak cow yang perlu dibeli berdasarkan total
+        cows_needed = self.TARGETS["COW"] - cow_total
+
         cow_ok = (
             self.COW_START_DAY <= day <= self.COW_END_DAY
-            and cow_in_shed == 0
-            and cow_total < self.TARGETS["COW"]
-            and empty_pastures > 0
+            and cow_in_shed == 0  # jangan numpuk di shed
+            and cows_needed > 0
+            and has_place_for_cow
             and days_left >= self.MIN_DAYS_TO_RECOVER_COW
             and money >= cow_cost + self.MIN_CASH_RESERVE
             and disposable_cash >= cow_cost
@@ -152,25 +137,40 @@ class AnimalManager:
         if cow_ok:
             orders.append(["BUY_ANIMAL", "COW", 1])
             total_cost += cow_cost
+            disposable_cash -= cow_cost
 
         # ==========================================
-        # SHEEP — disable untuk sekarang
+        # SHEEP
         # ==========================================
-        # (kalau mau aktifkan nanti, uncomment blok di bawah)
-        # sheep_total = self._count_live(state, "SHEEP")
-        # sheep_in_shed = int(shed.get("SHEEP", 0))
-        # sheep_cost = self.ANIMAL_COST["SHEEP"]
-        # sheep_ok = (
-        #     self.COW_START_DAY <= day <= self.COW_END_DAY
-        #     and sheep_in_shed == 0
-        #     and sheep_total < self.TARGETS["SHEEP"]
-        #     and empty_pastures > 0
-        #     and days_left >= 14
-        #     and money >= sheep_cost + self.MIN_CASH_RESERVE
-        #     and disposable_cash >= sheep_cost
-        # )
-        # if sheep_ok:
-        #     orders.append(["BUY_ANIMAL", "SHEEP", 1])
-        #     total_cost += sheep_cost
+        sheep_total = self._count_live(state, "SHEEP")
+        sheep_in_shed = int(shed.get("SHEEP", 0))
+        sheep_cost = self.ANIMAL_COST["SHEEP"]
+
+        sheep_placed = sum(
+            1 for row in state.tiles for t in row
+            if isinstance(t, dict) and t.get("animal") == "SHEEP"
+        )
+
+        has_place_for_sheep = empty_pastures > 0 or total_pastures == 0
+
+        sheeps_needed = self.TARGETS["SHEEP"] - sheep_total
+
+        sheep_ok = (
+            self.SHEEP_START_DAY <= day <= self.SHEEP_END_DAY
+            and sheep_in_shed == 0
+            and sheeps_needed > 0
+            and has_place_for_sheep
+            and days_left >= self.MIN_DAYS_TO_RECOVER_SHEEP
+            and money >= sheep_cost + self.MIN_CASH_RESERVE
+            and disposable_cash >= sheep_cost
+        )
+        if sheep_ok:
+            orders.append(["BUY_ANIMAL", "SHEEP", 1])
+            total_cost += sheep_cost
+            disposable_cash -= sheep_cost
+
+        # ==========================================
+        # GOOSE — disabled (target 0)
+        # ==========================================
 
         return orders, total_cost

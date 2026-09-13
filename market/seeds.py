@@ -14,15 +14,15 @@ class SeedManager:
     TOTAL_SEASON_DAYS: int = 30
 
     # Reserve minimum cash
-    MIN_CASH_RESERVE: float = 100.0
+    MIN_CASH_RESERVE: float = 300.0
     # Buffer seed di atas kapasitas tile
     SEED_BUFFER: int = 5
     # Max beli per turn per crop
-    MAX_BUY_PER_TURN: int = 8
+    MAX_BUY_PER_TURN: int = 20
 
     # Late-game cutoff: berhenti beli hanya di 2 hari terakhir
     # (CARROT/WHEAT first_yield = 2 hari, masih bisa panen D28-D29)
-    LATE_GAME_CUTOFF: int = 28
+    LATE_GAME_CUTOFF: int = 25
 
     # Crop cepat untuk fallback
     FAST_CROPS = {"WHEAT", "CARROT"}
@@ -117,8 +117,8 @@ class SeedManager:
         """Generates sorted list of BUY_SEED orders based on utility scores."""
         orders: List[MarketOrder] = []
 
-        # Hanya beli seed di turn pertama setiap hari
-        if state.hour != 0:
+        # FIX: boleh beli seed setiap turn di D00-D03 untuk agresif
+        if state.hour != 0 and state.day > 3:
             return orders
 
         # Reserve cash dulu
@@ -173,8 +173,12 @@ class SeedManager:
 
             # Target konservatif berdasarkan crop
             if crop_name == "WHEAT":
-                animal_count = self._count_animals(state)
-                target_count = max(4, animal_count * 3) if animal_count > 0 else 4
+                # FIX: WHEAT D00-D01 boost untuk feed buffer
+                if state.day <= 1:
+                    target_count = 10
+                else:
+                    animal_count = self._count_animals(state)
+                    target_count = max(4, animal_count * 3) if animal_count > 0 else 4
 
             elif crop_name in {"STRAWBERRY", "TOMATO"}:
                 target_count = 0

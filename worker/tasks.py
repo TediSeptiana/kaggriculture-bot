@@ -68,6 +68,46 @@ class TaskEvaluator:
                     return ["PICKUP", "SHEEP", 1]
 
         # ============================================================
+        # ============================================================
+        # ANIMAL — urutan prioritas:
+        #   1. Preemptive pickup WHEAT dari shed (kalau ada hewan lapar)
+        #   2. COLLECT egg/milk/wool (paling urgent — yield bisa terbuang)
+        #   3. COLLECT_FERTILIZER (nilai $100+, tidak accumulate)
+        #   4. FEED (wajib tiap hari, kalau tidak hewan kabur)
+        # ============================================================
+                # ============================================================
+        # ANIMAL — prioritas FEED dulu (animal bisa mati kalau tidak di-feed)
+        # ============================================================
+        if role_type == "ANIMAL":
+            has_hungry_animal = any(
+                isinstance(t, dict)
+                and t.get("kind") in ("COOP", "PASTURE")
+                and t.get("animal")
+                and not t.get("fed_today", False)
+                for row in tiles for t in row
+            )
+
+            # Preemptive pickup wheat dari shed
+            if (
+                has_hungry_animal
+                and not carried("WHEAT")
+                and state.is_shed_adjacent(unit_pos)
+                and state.shed.get("WHEAT", 0) > 0
+            ):
+                return ["PICKUP", "WHEAT", 5]
+
+            if isinstance(current_tile, dict) and current_tile.get("kind") in ("COOP", "PASTURE"):
+                animal = current_tile.get("animal")
+                if animal:
+                    # PRIORITAS 1: FEED — animal mati kalau tidak di-feed
+                    if not current_tile.get("fed_today", False) and carried("WHEAT"):
+                        return ["FEED"]
+                    # PRIORITAS 2: COLLECT egg/milk/wool
+                    if int(current_tile.get("yield_units", 0)) > 0:
+                        return ["COLLECT"]
+                    # PRIORITAS 3: COLLECT fertilizer
+                    if current_tile.get("fertilizer_available", False):
+                        return ["COLLECT_FERTILIZER"]
         # PLACE animal ke struktur
         # ============================================================
         if role_type in {"ANIMAL", "PLACE"}:
@@ -81,44 +121,6 @@ class TaskEvaluator:
                             return ["PLACE", "COW"]
                         if carried("SHEEP"):
                             return ["PLACE", "SHEEP"]
-
-        # ============================================================
-        # ANIMAL — urutan prioritas:
-        #   1. Preemptive pickup WHEAT dari shed (kalau ada hewan lapar)
-        #   2. COLLECT egg/milk/wool (paling urgent — yield bisa terbuang)
-        #   3. COLLECT_FERTILIZER (nilai $100+, tidak accumulate)
-        #   4. FEED (wajib tiap hari, kalau tidak hewan kabur)
-        # ============================================================
-        if role_type == "ANIMAL":
-            has_hungry_animal = any(
-                isinstance(t, dict)
-                and t.get("kind") in ("COOP", "PASTURE")
-                and t.get("animal")
-                and not t.get("fed_today", False)
-                for row in tiles for t in row
-            )
-
-            # Preemptive pickup wheat
-            if (
-                has_hungry_animal
-                and not carried("WHEAT")
-                and state.is_shed_adjacent(unit_pos)
-                and state.shed.get("WHEAT", 0) > 0
-            ):
-                return ["PICKUP", "WHEAT", 5]
-
-            if isinstance(current_tile, dict) and current_tile.get("kind") in ("COOP", "PASTURE"):
-                animal = current_tile.get("animal")
-                if animal:
-                    # ⚡ FIX: FERTILIZER DULU (tidak accumulate — hilang kalau tidak di-collect hari ini)
-                    if current_tile.get("fertilizer_available", False):
-                        return ["COLLECT_FERTILIZER"]
-                    # Egg/milk/wool kedua (max_held 4, tahan beberapa hari)
-                    if int(current_tile.get("yield_units", 0)) > 0:
-                        return ["COLLECT"]
-                    # Feed terakhir
-                    if not current_tile.get("fed_today", False) and carried("WHEAT"):
-                        return ["FEED"]
 
         # ============================================================
         # FERTILIZE — apply fertilizer ke tanaman (MELON + STRAWBERRY)
