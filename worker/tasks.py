@@ -82,6 +82,15 @@ class TaskEvaluator:
                         if carried("SHEEP"):
                             return ["PLACE", "SHEEP"]
 
+        if role_type == "ANIMAL":
+            if isinstance(current_tile, dict) and current_tile.get("kind") in ("COOP", "PASTURE"):
+                animal = current_tile.get("animal")
+                # PRIORITAS: collect dulu sebelum feed
+                if int(current_tile.get("yield_units", 0)) > 0:
+                    return ["COLLECT"]
+                if not current_tile.get("fed_today", False):
+                    return ["FEED"]
+
         # ============================================================
         # FEED — FIX: preemptive pickup wheat dari shed
         # Worker spawn di shed, jadi pickup harus trigger SEBELUM
