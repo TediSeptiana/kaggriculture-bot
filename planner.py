@@ -16,6 +16,9 @@ class AgentPlanner:
         self.market_planner = MarketPlanner()
         self.pending_animal: str | None = None
         self.last_day: int | None = None
+        # FIX: cache worker roles per day
+        self.worker_roles: Dict[int, WorkerRole] = {}
+        self.roles_day: int = -1
 
     def _assess_global_farm_demand(self, state: FarmState) -> List[WorkerRole]:
         """Evaluates macro demand across the farm to create a dynamic role priority list."""
@@ -27,7 +30,6 @@ class AgentPlanner:
         weed_count = 0
         empty_count = 0
 
-        # --- Animal counters ---
         has_coop = False
         has_pasture = False
         has_empty_coop = False
@@ -83,31 +85,26 @@ class AgentPlanner:
                         if int(t.get("yield_units", 0)) > 0:
                             has_animal_yield = True
 
-        # ------------------------------------------------------------------
-        # Build demand priority order based on macro urgency
-        # ------------------------------------------------------------------
         role_demands: List[WorkerRole] = []
 
-        # Priority 1: Harvesting mature crops (Direct Cash Liquidation)
+        # Priority 1: Harvest
         if harvestable_count > 0:
             role_demands.extend([WorkerRole.HARVESTER] * min(3, harvestable_count))
 
-        # Priority 2: Watering thirsty crops (Prevent Yield Degradation)
+        # Priority 2: Water
         if unwatered_count > 0:
-            role_demands.extend([WorkerRole.WATERER] * min(5, unwatered_count))
+            role_demands.extend([WorkerRole.WATERER] * min(4, unwatered_count))
 
-        # Priority 3: Planting if seeds are available and empty tiles exist
+        # Priority 3: Plant
         total_seeds = sum(state.seeds.values())
         if empty_count > 0 and total_seeds > 0:
             role_demands.extend([WorkerRole.PLANTER] * min(2, empty_count))
 
-        # Priority 4: Clearing weeds
+        # Priority 4: Clear weeds
         if weed_count > 0:
             role_demands.extend([WorkerRole.DIGGER] * min(2, weed_count))
 
-        # ------------------------------------------------------------------
-        # Priority 5: Animal care — BUILD / PLACE / FEED
-        # ------------------------------------------------------------------
+        # Priority 5: Animal care
         shed = getattr(state, "shed", {}) or {}
         has_goose_in_shed = shed.get("GOOSE", 0) > 0
         has_cow_in_shed = shed.get("COW", 0) > 0
@@ -125,17 +122,14 @@ class AgentPlanner:
 
         if need_build or need_place or need_feed:
             if need_feed:
-                role_demands.insert(0, WorkerRole.ANIMAL)   # paling urgent
+                role_demands.insert(0, WorkerRole.ANIMAL)
             if need_place:
                 role_demands.append(WorkerRole.ANIMAL)
             if need_build:
                 role_demands.append(WorkerRole.ANIMAL)
 
-        # ------------------------------------------------------------------
-        # Priority 6: Fertilizer application ke MELON/STRAWBERRY
-        # ------------------------------------------------------------------
+        # Priority 6: Fertilize
         has_fertilizer_in_shed = shed.get("FERTILIZER", 0) > 0
-
         if has_fertilizer_in_shed:
             need_fertilize = False
             for row in tiles:
@@ -161,10 +155,8 @@ class AgentPlanner:
                     break
 
             if need_fertilize:
-                # Insert di depan karena fertilizer window terbatas (3 hari)
                 role_demands.insert(0, WorkerRole.FERTILIZE)
 
-        # Fallback to VERSATILE if no specific dominant demand
         if not role_demands:
             role_demands = [WorkerRole.VERSATILE]
 
@@ -173,32 +165,31 @@ class AgentPlanner:
     def plan_turn(self, obs: Dict[str, Any]) -> Dict[str, Any]:
         """Main entry point processing observation dict and returning action payload."""
         state = FarmState.from_obs(obs)
+
+        # ============================================================
+        # FIX: Reset worker roles di hari baru
+        # Roles tetap sama sepanjang hari untuk efisiensi pathfinding
+        # ============================================================
+        if state.day != self.roles_day:
+            self.worker_roles = {}
+            self.roles_day = state.day
+
         if state.day == 0 and self.last_day != 0:
             self.pending_animal = None
             self.market_planner.pending_animal = None
         self.last_day = state.day
 
-        # ------------------------------------------------------------------
         # 1. Market Queue Planning
-        # ------------------------------------------------------------------
         market_actions = self.market_planner.plan_orders(state)
 
-        # ------------------------------------------------------------------
         # 2. Dynamic Macro Demand Assessment
-        # ------------------------------------------------------------------
         demand_roles = self._assess_global_farm_demand(state)
 
         assigned_targets: Set[Pos] = set()
 
-        # ------------------------------------------------------------------
-        # 3. Animal work state (dipakai farmer & hands)
-        # ------------------------------------------------------------------
+        # 3. Animal work state
         has_coop = any(
             isinstance(tile, dict) and tile.get("kind") == "COOP"
-            for row in state.tiles for tile in row
-        )
-        has_pasture = any(
-            isinstance(tile, dict) and tile.get("kind") == "PASTURE"
             for row in state.tiles for tile in row
         )
         has_empty_coop = any(
@@ -216,7 +207,10 @@ class AgentPlanner:
 
         shed_goose = state.shed.get("GOOSE", 0)
         shed_cow = state.shed.get("COW", 0)
-        waiting_animal = shed_goose > 0 or shed_cow > 0
+        has_pasture = any(
+            isinstance(tile, dict) and tile.get("kind") == "PASTURE"
+            for row in state.tiles for tile in row
+        )
 
         has_hungry_animal = any(
             isinstance(tile, dict)
@@ -233,9 +227,6 @@ class AgentPlanner:
             for row in state.tiles for tile in row
         )
 
-        # ------------------------------------------------------------------
-        # 3b. Harvest urgency untuk keputusan hand idx 3
-        # ------------------------------------------------------------------
         harvestable_crops = 0
         for row in state.tiles:
             for t in row:
@@ -252,9 +243,9 @@ class AgentPlanner:
 
         urgent_harvest = harvestable_crops >= 3
 
-        # ------------------------------------------------------------------
-        # 4. Main Farmer Execution (Unit ID: 0)
-        # ------------------------------------------------------------------
+        # ============================================================
+        # 4. Farmer Execution — assign role SEKALI per hari
+        # ============================================================
         farmer_inv = state.inventories[0] if len(state.inventories) > 0 else []
         if self.pending_animal:
             farmer_inv = list(farmer_inv) + [{self.pending_animal: 1}]
@@ -267,11 +258,18 @@ class AgentPlanner:
             or (shed_cow > 0 and has_empty_pasture)
         )
 
-        farmer_role = (
-            WorkerRole.ANIMAL
-            if farmer_needs_animal
-            else (demand_roles[0] if demand_roles else WorkerRole.DIGGER)
-        )
+        # FIX: assign farmer role SEKALI per hari
+        if 0 not in self.worker_roles:
+            if farmer_needs_animal:
+                self.worker_roles[0] = WorkerRole.ANIMAL
+            else:
+                self.worker_roles[0] = demand_roles[0] if demand_roles else WorkerRole.DIGGER
+
+        farmer_role = self.worker_roles[0]
+
+        # Override: kalau animal transisi butuh farmer, paksa ANIMAL
+        if farmer_needs_animal:
+            farmer_role = WorkerRole.ANIMAL
 
         farmer_action = self.worker_planner.decide_action(
             unit_pos=state.farmer_pos,
@@ -281,7 +279,6 @@ class AgentPlanner:
             assigned_targets=assigned_targets,
         )
 
-        # Update pending_animal state
         if farmer_action and farmer_action[0] == "PICKUP":
             self.pending_animal = str(farmer_action[1])
             self.market_planner.pending_animal = self.pending_animal
@@ -289,9 +286,9 @@ class AgentPlanner:
             self.pending_animal = None
             self.market_planner.pending_animal = None
 
-        # ------------------------------------------------------------------
-        # 5. Hired Hands Execution
-        # ------------------------------------------------------------------
+        # ============================================================
+        # 5. Hands Execution — assign role SEKALI per hari
+        # ============================================================
         animal_work_available = (
             has_hungry_animal
             or has_animal_yield
@@ -301,34 +298,31 @@ class AgentPlanner:
             or (shed_cow > 0 and not has_pasture)
         )
 
-        # FIX BARU: cek FERTILIZE coverage
-        fert_pending = WorkerRole.FERTILIZE in demand_roles
-        fert_taken_by_farmer = (farmer_role == WorkerRole.FERTILIZE)
-        fert_still_needed = fert_pending and not fert_taken_by_farmer
-
         hands_actions: List[List[Any]] = []
         for idx, hand_pos in enumerate(state.hands_pos):
             hand_unit_id = idx + 1
+
+            # FIX: assign role SEKALI per hari
+            if hand_unit_id not in self.worker_roles:
+                # Hand idx 3 = animal specialist (kalau tidak urgent harvest)
+                if idx == 3 and animal_work_available and not urgent_harvest:
+                    self.worker_roles[hand_unit_id] = WorkerRole.ANIMAL
+                elif idx == 3 and urgent_harvest:
+                    self.worker_roles[hand_unit_id] = WorkerRole.HARVESTER
+                elif idx == 3:
+                    self.worker_roles[hand_unit_id] = WorkerRole.VERSATILE
+                else:
+                    # Round-robin berdasarkan demand
+                    role_idx = idx % len(demand_roles)
+                    self.worker_roles[hand_unit_id] = demand_roles[role_idx]
+
+            assigned_role = self.worker_roles[hand_unit_id]
+
             hand_inv = (
                 state.inventories[hand_unit_id]
                 if hand_unit_id < len(state.inventories)
                 else []
             )
-
-            # FIX BARU: hand idx 0 ambil FERTILIZE kalau farmer tidak bisa,
-            #             TAPI hanya kalau tidak ada urgent harvest
-            if fert_still_needed and idx == 0 and not urgent_harvest:
-                assigned_role = WorkerRole.FERTILIZE
-                fert_still_needed = False
-            elif idx == 3 and animal_work_available and not urgent_harvest:
-                assigned_role = WorkerRole.ANIMAL
-            elif idx == 3 and urgent_harvest:
-                assigned_role = WorkerRole.HARVESTER
-            elif idx == 3:
-                assigned_role = WorkerRole.VERSATILE
-            else:
-                role_idx = (idx + 1) % len(demand_roles)
-                assigned_role = demand_roles[role_idx]
 
             hand_act = self.worker_planner.decide_action(
                 unit_pos=hand_pos,

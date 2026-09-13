@@ -14,11 +14,11 @@ class SeedManager:
     TOTAL_SEASON_DAYS: int = 30
 
     # Reserve minimum cash
-    MIN_CASH_RESERVE: float = 200.0
+    MIN_CASH_RESERVE: float = 100.0
     # Buffer seed di atas kapasitas tile
     SEED_BUFFER: int = 5
     # Max beli per turn per crop
-    MAX_BUY_PER_TURN: int = 5
+    MAX_BUY_PER_TURN: int = 8
 
     # Late-game cutoff: berhenti beli hanya di 2 hari terakhir
     # (CARROT/WHEAT first_yield = 2 hari, masih bisa panen D28-D29)
@@ -174,19 +174,22 @@ class SeedManager:
             # Target konservatif berdasarkan crop
             if crop_name == "WHEAT":
                 animal_count = self._count_animals(state)
-                # Wheat untuk pakan: 3 hari ke depan. Kalau tidak ada hewan, minimal 5.
-                target_count = max(5, animal_count * 3) if animal_count > 0 else 5
+                target_count = max(4, animal_count * 3) if animal_count > 0 else 4
+
             elif crop_name in {"STRAWBERRY", "TOMATO"}:
-                # Skip — ROI lambat untuk 30 hari
                 target_count = 0
+
             elif crop_name == "MELON":
-                # MELON: butuh 10 hari, jangan tanam kalau < 10 hari
                 if remaining_days < 10:
                     target_count = 0
                 else:
-                    target_count = max(3, min(8, room_for_seeds // 3))
+                    # FIX: lebih agresif MELON
+                    target_count = max(8, min(15, room_for_seeds // 2))
+
             elif crop_name == "CARROT":
-                target_count = max(5, room_for_seeds // 4)
+                # FIX: kurangi CARROT — MELON lebih profitable
+                target_count = max(3, room_for_seeds // 6)
+
             else:
                 target_count = max(5, room_for_seeds // 5)
 

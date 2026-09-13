@@ -61,14 +61,29 @@ class HiringManager:
         "SHEEP": 220.0,  # WOOL
     }
 
+    # ==================================================================
+    # FIX BARU: Minimum hands floor per fase — jamin coverage minimum
+    # D01-D02: 4 hand (agresif di awal, biaya murah)
+    # D03-D05: 5 hand
+    # D06-D20: 5 hand (peak)
+    # D21-D25: 4 hand (harvest tail)
+    # D26-D30: 2 hand (cleanup)
+    # ==================================================================
+    MIN_HANDS_FLOOR: Dict[Tuple[int, int], int] = {
+        (0, 2): 5,
+        (3, 5): 6,
+        (6, 10): 7,
+        (11, 20): 8,
+        (21, 25): 6,
+        (26, 30): 3,
+    }
+
     def __init__(
         self,
         farm_hand_cost_mult: float = 1.0,
         safety_margin_ratio: float = 0.0,
-        # FIX: naikkan buffer ke 400 — hiring terlalu agresif di 150
-        min_cash_buffer: float = 400.0,
-        # FIX: turunkan max_hands ke 6 — 9-10 hands = labor $495/hari tidak worth
-        max_hands: int = 6,
+        min_cash_buffer: float = 150.0,
+        max_hands: int = 8,
         planning_horizon_days: int = DEFAULT_PLANNING_HORIZON_DAYS,
         end_of_season_decay_start: int = 25,
     ) -> None:
@@ -93,6 +108,13 @@ class HiringManager:
         remaining = max(0, total_days - current_day)
         decay_window = max(1, total_days - decay_start)
         return 0.25 + 0.75 * (remaining / decay_window)
+
+    def _min_hands_for_day(self, day: int) -> int:
+        """FIX BARU: minimum hands floor per fase musim."""
+        for (start, end), n in self.MIN_HANDS_FLOOR.items():
+            if start <= day <= end:
+                return n
+        return 2
 
     # ------------------------------------------------------------------
     # Valuasi per-task
@@ -127,7 +149,7 @@ class HiringManager:
         return max(projected, float(current_yield_units))
 
     # ------------------------------------------------------------------
-    # Task extraction (FIX: tambah animal tasks)
+    # Task extraction
     # ------------------------------------------------------------------
     def _extract_horizon_tasks(self, state: FarmState) -> List[EconomicTask]:
         tasks: List[EconomicTask] = []
@@ -138,13 +160,11 @@ class HiringManager:
             state.day, self.TOTAL_SEASON_DAYS, self.end_of_season_decay_start
         )
 
-        # Hitung kebutuhan animal
         remaining_days_total = max(1, self.TOTAL_SEASON_DAYS - state.day)
         shed_goose = state.shed.get("GOOSE", 0)
         shed_cow = state.shed.get("COW", 0)
         shed_sheep = state.shed.get("SHEEP", 0)
 
-        # Cek ada coop/pasture untuk place
         empty_coop_exists = any(
             isinstance(t, dict) and t.get("kind") == "COOP" and not t.get("animal")
             for row in tiles for t in row
@@ -197,7 +217,7 @@ class HiringManager:
                         )
                     )
 
-                # ---------- BUILD COOP (FIX) ----------
+                # ---------- BUILD COOP ----------
                 if shed_goose > 0 and not any_coop_exists:
                     tasks.append(
                         EconomicTask(
@@ -210,7 +230,7 @@ class HiringManager:
                         )
                     )
 
-                # ---------- BUILD PASTURE (FIX) ----------
+                # ---------- BUILD PASTURE ----------
                 if (shed_cow > 0 or shed_sheep > 0) and not any_pasture_exists:
                     price = self.ANIMAL_PRODUCT_PRICE["COW"]
                     tasks.append(
@@ -312,20 +332,16 @@ class HiringManager:
                             )
 
                 # ============================================================
-                # COOP / PASTURE (FIX: tambah FEED, PLACE, HARVEST, COLLECT)
+                # COOP / PASTURE
                 # ============================================================
                 elif kind in ("COOP", "PASTURE"):
                     animal = tile.get("animal")
                     if animal:
                         animal_key = str(animal).upper()
-                        product_price = self.ANIMAL_PRODUCT_PRICE.get(
-                            animal_key, 50.0
-                        )
+                        product_price = self.ANIMAL_PRODUCT_PRICE.get(animal_key, 50.0)
 
-                        # ---------- FEED (kritis) ----------
+                        # ---------- FEED ----------
                         if not tile.get("fed_today", False):
-                            # Kalau tidak di-feed 2 hari, animal mati
-                            # Nilai = seluruh future income
                             feed_value = remaining_days_total * product_price * eos_factor
                             tasks.append(
                                 EconomicTask(
@@ -366,7 +382,7 @@ class HiringManager:
                             )
 
                     else:
-                        # ---------- PLACE animal dari shed ----------
+                        # ---------- PLACE animal ----------
                         if kind == "COOP" and shed_goose > 0:
                             tasks.append(
                                 EconomicTask(
@@ -504,17 +520,43 @@ class HiringManager:
     # Public API
     # ------------------------------------------------------------------
     def plan_hiring_orders(self, state: FarmState) -> List[MarketOrder]:
-        """Hire jika ΔEV_{t:t+H}(N) > hire_cost, dengan guard cash buffer & max hands."""
+        """Hire dengan 2 fase:
+        1. Minimum hands floor — retry SETIAP TURN sampai floor tercapai
+        2. EV-based hiring di atas floor — hanya di hour 0
+        """
         orders: List[MarketOrder] = []
 
         if state.day >= (self.TOTAL_SEASON_DAYS - 2):
             return orders
 
+        current_hires = state.hires_today
+        current_workers = 1 + current_hires
+        min_hands = self._min_hands_for_day(state.day)
+
+        # ==============================================================
+        # FASE 1: Minimum hands floor — LOOP sampai floor tercapai
+        # Ini akan menambah banyak HIRE sekaligus dalam 1 turn
+        # Tidak dibatasi state.hour, agar bisa retry setiap turn
+        # ==============================================================
+        while current_workers < min_hands and current_workers < self.max_hands:
+            next_hire_index = current_hires + 1
+            hire_cost = get_fibonacci_cost(next_hire_index, self.farm_hand_cost_mult)
+            cash_after_hire = state.money - hire_cost
+
+            if cash_after_hire < self.min_cash_buffer:
+                break
+
+            orders.append(["HIRE"])
+            current_hires += 1
+            current_workers += 1
+
+        # ==============================================================
+        # FASE 2: EV-based hiring di atas floor
+        # Hanya di hour 0 agar tidak spam order
+        # ==============================================================
         if state.hour != 0:
             return orders
 
-        current_hires = state.hires_today
-        current_workers = 1 + current_hires
         if current_workers >= self.max_hands:
             return orders
 

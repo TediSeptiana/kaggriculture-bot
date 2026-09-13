@@ -16,19 +16,19 @@ MarketOrder = List[Union[str, int]]
 class MarketPlanner:
     """Facade orchestrator coordinating labor, sales, land, seed, and animal managers."""
 
-    MAX_ORDERS_PER_TURN: int = 10
+    MAX_ORDERS_PER_TURN: int = 15
     TOTAL_SEASON_DAYS: int = 30
 
-    DEFAULT_EMERGENCY_RESERVE: float = 500.0
+    DEFAULT_EMERGENCY_RESERVE: float = 200.0
 
     # Land utilization threshold
-    MIN_LAND_UTILIZATION: float = 0.75
+    MIN_LAND_UTILIZATION: float = 2.0
 
     # FIX: 3x cost buffer (dari 2x) untuk cegah cash crash
     MIN_LAND_CASH_MULTIPLIER: float = 3.0
 
     # FIX: minimum cash untuk beli land — cegah death spiral Match 05
-    MIN_CASH_FOR_LAND: float = 3000.0
+    MIN_CASH_FOR_LAND: float = 2000.0
 
     def __init__(self, emergency_reserve: float = DEFAULT_EMERGENCY_RESERVE) -> None:
         self.emergency_reserve = emergency_reserve
@@ -39,12 +39,10 @@ class MarketPlanner:
         self.animal_manager = AnimalManager()
 
     def get_disposable_cash(self, state: FarmState) -> float:
-        """Calculates available liquid capital above the safety reserve buffer."""
-        # FIX: emergency stop diperketat dari $100 → $200
-        if state.money < 200:
+        """Agresif: buffer kecil, boleh pakai 85% cash."""
+        if state.money < 100:
             return 0.0
-
-        spending_cap = state.money * (0.40 if state.day == 0 else 0.70)
+        spending_cap = state.money * (0.60 if state.day == 0 else 0.85)
         return max(0.0, min(state.money - self.emergency_reserve, spending_cap))
 
     def _land_utilization(self, state: FarmState) -> float:

@@ -17,7 +17,7 @@ class TaskAssigner:
         WorkerRole.WATERER: ["HARVEST", "WATER", "DIG", "PLANT"],
         WorkerRole.HARVESTER: ["HARVEST", "WATER", "PLANT", "DIG"],
         WorkerRole.ANIMAL: [
-            "COLLECT_FERTILIZER",   # FIX: naikkan ke atas — tidak accumulate
+            "COLLECT_FERTILIZER",
             "FEED",
             "PLACE",
             "BUILD",
@@ -116,7 +116,6 @@ class TaskAssigner:
                 and not t.get("fed_today", False)
             )
 
-        # FIX BARU: handler COLLECT_FERTILIZER yang sebelumnya hilang
         if task_type == "COLLECT_FERTILIZER":
             if not isinstance(t, dict) or t.get("kind") not in {"COOP", "PASTURE"}:
                 return False
@@ -134,10 +133,8 @@ class TaskAssigner:
                 first_yield = spec.first_yield_day if spec else 2
                 return crop_age >= first_yield and yield_units > 0
             if isinstance(t, dict) and t.get("kind") in {"COOP", "PASTURE"}:
-                # FIX: cek egg/milk/wool ATAU fertilizer
                 if int(t.get("yield_units", 0)) > 0:
                     return True
-                # Fallback: coop dengan fertilizer_available juga butuh kunjungan
                 if t.get("animal") and t.get("fertilizer_available", False):
                     return True
             return False
@@ -182,6 +179,11 @@ class TaskAssigner:
         assigned_targets: Set[Pos],
         current_committed_target: Optional[Pos] = None,
     ) -> Tuple[Optional[Pos], Optional[str]]:
+        # ============================================================
+        # ROLLBACK: pakai unit_pos (posisi worker saat ini)
+        # ============================================================
+
+        # 1. Evaluate committed target
         if current_committed_target is not None:
             if (
                 current_committed_target not in assigned_targets
@@ -218,6 +220,7 @@ class TaskAssigner:
                     if cls.is_tile_valid_for_task(current_committed_target, state, task_type):
                         return current_committed_target, task_type
 
+        # 2. Cari target baru
         unlocked_positions = state.get_unlocked_tiles()
         task_order = cls.ROLE_HIERARCHY.get(role, ["HARVEST", "WATER", "PLANT", "DIG"])
 
