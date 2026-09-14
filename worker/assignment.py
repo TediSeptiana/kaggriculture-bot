@@ -17,7 +17,7 @@ class TaskAssigner:
     ROLE_HIERARCHY: Dict[WorkerRole, List[str]] = {
         WorkerRole.DIGGER: ["DIG", "HARVEST", "WATER", "PLANT"],
         WorkerRole.PLANTER: ["PLANT", "WATER", "HARVEST", "DIG"],
-        WorkerRole.WATERER: ["WATER", "HARVEST", "DIG", "PLANT"],
+        WorkerRole.WATERER: ["WATER", "HARVEST", "DIG"],
         WorkerRole.HARVESTER: ["HARVEST", "WATER", "PLANT", "DIG"],
         WorkerRole.ANIMAL: ["COLLECT_FERTILIZER", "FEED", "PLACE", "BUILD", "HARVEST", "WATER", "PLANT", "DIG"],
         WorkerRole.VERSATILE: ["HARVEST", "WATER", "PLANT", "DIG"],

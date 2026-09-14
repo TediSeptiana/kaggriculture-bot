@@ -11,3 +11,7 @@ worker/pathfinding.py
 worker/planner.py
 worker/roles.py
 worker/tasks.py
+
+main.py
+state.py
+planner.py
