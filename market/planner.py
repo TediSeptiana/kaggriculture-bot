@@ -1,5 +1,3 @@
-"""Facade planner orchestrating specialized market sub-managers with dynamic cash tracking."""
-
 from __future__ import annotations
 
 from typing import Any, List, Union
@@ -12,14 +10,14 @@ from state import FarmState
 
 MarketOrder = List[Union[str, int]]
 
-
 class MarketPlanner:
     """Facade orchestrator coordinating labor, sales, land, seed, and animal managers."""
 
     MAX_ORDERS_PER_TURN: int = 15
     TOTAL_SEASON_DAYS: int = 30
 
-    DEFAULT_EMERGENCY_RESERVE: float = 200.0
+    # FIX: Target sisa uang 100-200 coin. Ambil titik tengah 150.0 untuk agresivitas maksimal.
+    DEFAULT_EMERGENCY_RESERVE: float = 150.0
 
     MIN_LAND_UTILIZATION: float = 0.85
     MIN_LAND_CASH_MULTIPLIER: float = 3.0
@@ -34,11 +32,17 @@ class MarketPlanner:
         self.animal_manager = AnimalManager()
 
     def get_disposable_cash(self, state: FarmState) -> float:
-        """Agresif: buffer kecil, boleh pakai 85% cash."""
-        if state.money < 100:
+        """
+        FIX: Agresif maksimal. Sisakan hanya ~150 coin.
+        Hari ke-0: gunakan 100% dari kelebihan reserve.
+        Hari selanjutnya: gunakan 95% untuk sedikit ruang napas.
+        """
+        reserve = 150.0
+        if state.money <= reserve:
             return 0.0
-        spending_cap = state.money * (0.75 if state.day == 0 else 0.70)
-        return max(0.0, min(state.money - self.emergency_reserve, spending_cap))
+        
+        multiplier = 1.0 if state.day == 0 else 0.95
+        return max(0.0, (state.money - reserve) * multiplier)
 
     def _land_utilization(self, state: FarmState) -> float:
         """Hitung utilisasi tile (used / total unlocked)."""
@@ -64,7 +68,7 @@ class MarketPlanner:
         disposable_cash = self.get_disposable_cash(state)
 
         # ------------------------------------------------------------------
-        # 1. LAND EXPANSION
+        # 1. LAND EXPANSION (Prioritas tinggi di awal jika kondisi terpenuhi)
         # ------------------------------------------------------------------
         if state.day <= 15:
             utilization = self._land_utilization(state)
@@ -95,24 +99,22 @@ class MarketPlanner:
         orders.extend(animal_orders)
         disposable_cash = max(0.0, disposable_cash - animal_cost)
 
-        # ============================================================
-        # WHEAT FEED — Beli WHEAT product kalau ada animal di manapun
-        # Prioritas #1: animal harus di-feed setiap hari
-        # ============================================================
+        # ------------------------------------------------------------------
+        # 3. WHEAT FEED (Prioritas #1: animal harus di-feed setiap hari)
+        # ------------------------------------------------------------------
         shed = getattr(state, "shed", {}) or {}
 
         # Hitung total animal: tile + shed + inventory
         animal_count = 0
-        # Di tile (pasture/coop)
         for row in state.tiles:
             for t in row:
                 if isinstance(t, dict) and t.get("animal"):
                     animal_count += 1
-        # Di shed
+        
         animal_count += int(shed.get("COW", 0))
         animal_count += int(shed.get("SHEEP", 0))
         animal_count += int(shed.get("GOOSE", 0))
-        # Di inventory worker
+        
         for inv in getattr(state, "inventories", []) or []:
             if isinstance(inv, list):
                 for entry in inv:
@@ -128,10 +130,9 @@ class MarketPlanner:
 
             if need_wheat > 0:
                 wheat_price = state.market_prices.get("WHEAT", 30.0)
-                # Beli kalau cash cukup + buffer $150
+                # Beli kalau cash cukup + buffer kecil $150
                 if state.money > wheat_price * need_wheat + 150:
-                    # Max 10 per turn
-                    buy_qty = min(need_wheat, 10)
+                    buy_qty = min(need_wheat, 10)  # Max 10 per turn
                     orders.append(["BUY_PRODUCT", "WHEAT", buy_qty])
                     disposable_cash -= wheat_price * buy_qty
 
@@ -155,6 +156,7 @@ class MarketPlanner:
         sales_orders = self.sales_manager.plan_sales_orders(state)
         orders.extend(sales_orders)
 
+        # Simulasi penambahan cash dari penjualan untuk perencanaan turn ini
         sales_proceeds = sum(
             state.market_prices.get(item, 0.0) * count
             for item, count in state.shed.items()
@@ -163,7 +165,7 @@ class MarketPlanner:
         disposable_cash += sales_proceeds
 
         # ------------------------------------------------------------------
-        # 6. LAND fallback
+        # 6. LAND fallback (jika belum dibeli di step 1)
         # ------------------------------------------------------------------
         if not any(order == ["BUY_LAND"] for order in orders):
             utilization = self._land_utilization(state)

@@ -14,7 +14,7 @@ class SeedManager:
     TOTAL_SEASON_DAYS: int = 30
 
     # Reserve minimum cash
-    MIN_CASH_RESERVE: float = 300.0
+    MIN_CASH_RESERVE: float = 50.0
     # Buffer seed di atas kapasitas tile
     SEED_BUFFER: int = 5
     # Max beli per turn per crop

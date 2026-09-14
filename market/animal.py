@@ -32,7 +32,7 @@ class AnimalManager:
     SHEEP_END_DAY: int = 14
 
     # Reserve cash minimum agresif di awal
-    MIN_CASH_RESERVE: float = 200.0
+    MIN_CASH_RESERVE: float = 100.0
 
     # Minimal hari tersisa agar animal balik modal
     MIN_DAYS_TO_RECOVER_GOOSE: int = 10

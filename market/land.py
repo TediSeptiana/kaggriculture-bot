@@ -26,7 +26,7 @@ class LandManager:
     MIN_UTILIZATION: float = 0.85
 
     # FIX: dinaikkan dari 500 → 1500
-    CASH_BUFFER: float = 1500.0
+    CASH_BUFFER: float = 150.0
 
     # FIX: dinaikkan dari 3 → 8 hari
     MIN_DAYS_REMAINING: int = 12
