@@ -16,9 +16,7 @@ class AgentPlanner:
         self.market_planner = MarketPlanner()
         self.pending_animal: str | None = None
         self.last_day: int | None = None
-        # FIX: cache worker roles per day
         self.worker_roles: Dict[int, WorkerRole] = {}
-        self.roles_day: int = -1
 
     def _assess_global_farm_demand(self, state: FarmState) -> List[WorkerRole]:
         """Evaluates macro demand across the farm to create a dynamic role priority list."""
@@ -89,11 +87,12 @@ class AgentPlanner:
 
         # Priority 1: Harvest
         if harvestable_count > 0:
-            role_demands.extend([WorkerRole.HARVESTER] * min(3, harvestable_count))
+            role_demands.extend([WorkerRole.HARVESTER] * min(5, harvestable_count))
 
         # Priority 2: Water
         if unwatered_count > 0:
-            role_demands.extend([WorkerRole.WATERER] * min(4, unwatered_count))
+            water_cap = 6 if unwatered_count > 6 else 4
+            role_demands.extend([WorkerRole.WATERER] * min(water_cap, unwatered_count))
 
         # Priority 3: Plant
         total_seeds = sum(state.seeds.values())
@@ -102,7 +101,10 @@ class AgentPlanner:
 
         # Priority 4: Clear weeds
         if weed_count > 0:
-            role_demands.extend([WorkerRole.DIGGER] * min(2, weed_count))
+            digger_cap = 4 if weed_count > 10 else 2
+            role_demands.extend([WorkerRole.DIGGER] * min(digger_cap, weed_count))
+        elif empty_count == 0 and state.seeds.get("MELON", 0) > 0:
+            role_demands.append(WorkerRole.DIGGER)
 
         # ------------------------------------------------------------------
         # Priority 5: Animal care — BUILD_PASTURE / PLACE / FEED
@@ -190,15 +192,6 @@ class AgentPlanner:
     def plan_turn(self, obs: Dict[str, Any]) -> Dict[str, Any]:
         """Main entry point processing observation dict and returning action payload."""
         state = FarmState.from_obs(obs)
-
-        # ============================================================
-        # FIX: Reset worker roles di hari baru
-        # Roles tetap sama sepanjang hari untuk efisiensi pathfinding
-        # ============================================================
-        
-        if state.day != self.roles_day:
-            self.worker_roles = {}
-            self.roles_day = state.day
 
         if state.day == 0 and self.last_day != 0:
             self.pending_animal = None
@@ -308,15 +301,10 @@ class AgentPlanner:
             or (total_sheep_pending > 0 and has_empty_pasture)
         )
 
-        if 0 not in self.worker_roles:
-            if farmer_needs_animal:
-                self.worker_roles[0] = WorkerRole.ANIMAL
-            else:
-                self.worker_roles[0] = demand_roles[0] if demand_roles else WorkerRole.DIGGER
-
-        farmer_role = self.worker_roles[0]
         if farmer_needs_animal:
             farmer_role = WorkerRole.ANIMAL
+        else:
+            farmer_role = demand_roles[0] if demand_roles else WorkerRole.DIGGER
 
         # 🔥 KUMPULKAN SEMUA POSISI WORKER UNTUK COLLISION AVOIDANCE
         all_worker_positions = {state.farmer_pos} | set(state.hands_pos)
@@ -355,18 +343,15 @@ class AgentPlanner:
         for idx, hand_pos in enumerate(state.hands_pos):
             hand_unit_id = idx + 1
 
-            if hand_unit_id not in self.worker_roles:
-                if idx == 3 and animal_work_available and not urgent_harvest:
-                    self.worker_roles[hand_unit_id] = WorkerRole.ANIMAL
-                elif idx == 3 and urgent_harvest:
-                    self.worker_roles[hand_unit_id] = WorkerRole.HARVESTER
-                elif idx == 3:
-                    self.worker_roles[hand_unit_id] = WorkerRole.VERSATILE
-                else:
-                    role_idx = idx % len(demand_roles)
-                    self.worker_roles[hand_unit_id] = demand_roles[role_idx]
-
-            assigned_role = self.worker_roles[hand_unit_id]
+            if idx == 3 and animal_work_available and not urgent_harvest:
+                assigned_role = WorkerRole.ANIMAL
+            elif idx == 3 and urgent_harvest:
+                assigned_role = WorkerRole.HARVESTER
+            elif idx == 3:
+                assigned_role = WorkerRole.VERSATILE
+            else:
+                role_idx = idx % len(demand_roles)
+                assigned_role = demand_roles[role_idx]
             hand_inv = (
                 state.inventories[hand_unit_id]
                 if hand_unit_id < len(state.inventories)

@@ -20,9 +20,8 @@ class SeedManager:
     # Max beli per turn per crop
     MAX_BUY_PER_TURN: int = 20
 
-    # Late-game cutoff: berhenti beli hanya di 2 hari terakhir
-    # (CARROT/WHEAT first_yield = 2 hari, masih bisa panen D28-D29)
-    LATE_GAME_CUTOFF: int = 25
+    # Stop stocking seeds once the profitable melon window has closed.
+    LATE_GAME_CUTOFF: int = 19
 
     # Crop cepat untuk fallback
     FAST_CROPS = {"WHEAT", "CARROT"}
@@ -89,9 +88,12 @@ class SeedManager:
         try:
             tiles = state.tiles
             count = 0
-            for row in tiles:
-                for t in row:
-                    if t is None:
+            for y, row in enumerate(tiles):
+                for x, t in enumerate(row):
+                    if (
+                        t is None
+                        and state.get_quadrant(x, y) in state.unlocked_quadrants
+                    ):
                         count += 1
             return count
         except Exception:

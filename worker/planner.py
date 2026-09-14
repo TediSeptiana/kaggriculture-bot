@@ -87,4 +87,21 @@ class WorkerPlanner:
             if move_cmd != "PASS":
                 return [move_cmd]
 
+            assigned_targets.add(best_target)
+            alt_target, alt_task = TaskAssigner.find_best_target(
+                unit_pos=unit_pos,
+                state=state,
+                role=role,
+                assigned_targets=assigned_targets,
+                current_committed_target=None,
+                occupied_tiles=other_worker_positions,
+            )
+            if alt_target and alt_task:
+                assigned_targets.add(alt_target)
+                alt_move = PathFinder.a_star_next_step(
+                    unit_pos, alt_target, occupied_tiles=other_worker_positions
+                )
+                if alt_move != "PASS":
+                    return [alt_move]
+
         return ["PASS"]

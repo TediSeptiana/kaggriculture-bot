@@ -13,15 +13,15 @@ MarketOrder = List[Union[str, int]]
 class MarketPlanner:
     """Facade orchestrator coordinating labor, sales, land, seed, and animal managers."""
 
-    MAX_ORDERS_PER_TURN: int = 15
+    MAX_ORDERS_PER_TURN: int = 25
     TOTAL_SEASON_DAYS: int = 30
 
     # FIX: Target sisa uang 100-200 coin. Ambil titik tengah 150.0 untuk agresivitas maksimal.
     DEFAULT_EMERGENCY_RESERVE: float = 150.0
 
-    MIN_LAND_UTILIZATION: float = 0.85
-    MIN_LAND_CASH_MULTIPLIER: float = 3.0
-    MIN_CASH_FOR_LAND: float = 2000.0
+    MIN_LAND_UTILIZATION: float = 0.70
+    MIN_LAND_CASH_MULTIPLIER: float = 1.5
+    MIN_CASH_FOR_LAND: float = 1500.0
 
     def __init__(self, emergency_reserve: float = DEFAULT_EMERGENCY_RESERVE) -> None:
         self.emergency_reserve = emergency_reserve
@@ -70,7 +70,7 @@ class MarketPlanner:
         # ------------------------------------------------------------------
         # 1. LAND EXPANSION (Prioritas tinggi di awal jika kondisi terpenuhi)
         # ------------------------------------------------------------------
-        if state.day <= 15:
+        if state.day <= 18:
             utilization = self._land_utilization(state)
 
             if (
@@ -79,8 +79,8 @@ class MarketPlanner:
             ):
                 target_quad = (
                     ("NE", 1000.0, 3),
-                    ("SW", 2000.0, 7),
-                    ("SE", 4000.0, 11),
+                    ("SW", 2000.0, 6),
+                    ("SE", 4000.0, 9),
                 )
                 for quadrant, cost, deadline in target_quad:
                     if quadrant not in state.unlocked_quadrants and state.day >= deadline:

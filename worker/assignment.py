@@ -15,9 +15,9 @@ class Zone:
 
 class TaskAssigner:
     ROLE_HIERARCHY: Dict[WorkerRole, List[str]] = {
-        WorkerRole.DIGGER: ["HARVEST", "WATER", "DIG", "PLANT"],
-        WorkerRole.PLANTER: ["HARVEST", "WATER", "PLANT", "DIG"],
-        WorkerRole.WATERER: ["HARVEST", "WATER", "DIG", "PLANT"],
+        WorkerRole.DIGGER: ["DIG", "HARVEST", "WATER", "PLANT"],
+        WorkerRole.PLANTER: ["PLANT", "WATER", "HARVEST", "DIG"],
+        WorkerRole.WATERER: ["WATER", "HARVEST", "DIG", "PLANT"],
         WorkerRole.HARVESTER: ["HARVEST", "WATER", "PLANT", "DIG"],
         WorkerRole.ANIMAL: ["COLLECT_FERTILIZER", "FEED", "PLACE", "BUILD", "HARVEST", "WATER", "PLANT", "DIG"],
         WorkerRole.VERSATILE: ["HARVEST", "WATER", "PLANT", "DIG"],
@@ -235,6 +235,14 @@ class TaskAssigner:
                         crop = str(t.get("crop", "")) if isinstance(t, dict) else ""
                         prio = 0 if crop == "MELON" else (1 if crop == "STRAWBERRY" else 2)
                         candidates.append((zone_penalty + prio, d, pos))
+                    elif task_type == "WATER":
+                        t = state.tiles[pos[1]][pos[0]]
+                        critical = (
+                            int(t.get("consecutive_unwatered", 0))
+                            if isinstance(t, dict)
+                            else 0
+                        )
+                        candidates.append((zone_penalty - min(1, critical), d, pos))
                     else:
                         candidates.append((zone_penalty, d, pos))
 
