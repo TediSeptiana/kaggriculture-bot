@@ -128,6 +128,15 @@ class SeedManager:
         if available < 10.0:
             return orders
 
+        # FIX: cegah cash crash D05-D12 yang bikin hands 0
+        # Kalau cash di bawah $800, batasi belanja max $200
+        if state.money < 800 and state.day >= 5:
+            available = min(available, 200.0)
+
+        # FIX: kalau cash < $400, JANGAN beli sama sekali
+        if state.money < 400 and state.day >= 5:
+            return orders
+
         # Hitung kapasitas
         empty_tiles = self._count_empty_tiles(state)
         seeds_in_inv = sum(state.seeds.values())

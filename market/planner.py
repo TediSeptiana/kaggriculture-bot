@@ -19,8 +19,8 @@ class MarketPlanner:
     # FIX: Target sisa uang 100-200 coin. Ambil titik tengah 150.0 untuk agresivitas maksimal.
     DEFAULT_EMERGENCY_RESERVE: float = 150.0
 
-    MIN_LAND_UTILIZATION: float = 0.70
-    MIN_LAND_CASH_MULTIPLIER: float = 1.5
+    MIN_LAND_UTILIZATION: float = 0.65
+    MIN_LAND_CASH_MULTIPLIER: float = 2.0
     MIN_CASH_FOR_LAND: float = 1500.0
 
     def __init__(self, emergency_reserve: float = DEFAULT_EMERGENCY_RESERVE) -> None:
