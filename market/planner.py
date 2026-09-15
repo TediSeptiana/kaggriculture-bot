@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, List, Union
 from market.animal import AnimalManager
+from market.daily_config import DailyConfig
 from market.hiring import HiringManager, get_fibonacci_cost
 from market.land import LandManager
 from market.sales import SalesManager
@@ -16,12 +17,12 @@ class MarketPlanner:
     MAX_ORDERS_PER_TURN: int = 25
     TOTAL_SEASON_DAYS: int = 30
 
-    # FIX: Target sisa uang 100-200 coin. Ambil titik tengah 150.0 untuk agresivitas maksimal.
+    # Anti-Bonkos: reserve lebih kecil, cash flow kita sudah dikelola di DailyConfig
     DEFAULT_EMERGENCY_RESERVE: float = 150.0
 
-    MIN_LAND_UTILIZATION: float = 0.65
-    MIN_LAND_CASH_MULTIPLIER: float = 2.0
-    MIN_CASH_FOR_LAND: float = 1500.0
+    MIN_LAND_UTILIZATION: float = 0.70
+    MIN_LAND_CASH_MULTIPLIER: float = 1.8
+    MIN_CASH_FOR_LAND: float = 800.0  # Anti-Bonkos: lebih rendah, NE $1K di D10 dengan $25K+
 
     def __init__(self, emergency_reserve: float = DEFAULT_EMERGENCY_RESERVE) -> None:
         self.emergency_reserve = emergency_reserve
@@ -68,9 +69,13 @@ class MarketPlanner:
         disposable_cash = self.get_disposable_cash(state)
 
         # ------------------------------------------------------------------
-        # 1. LAND EXPANSION (Prioritas tinggi di awal jika kondisi terpenuhi)
+        # 1. LAND EXPANSION (berdasarkan DailyConfig.buy_land + kondisi finansial)
+        # Anti-Bonkos: beli NE di D10, beli SW+SE di D20
         # ------------------------------------------------------------------
-        if state.day <= 18:
+        phase_config = DailyConfig.get_config(state)
+        phase_buy_land = phase_config.get("buy_land", False)
+
+        if phase_buy_land and state.day <= 22:
             utilization = self._land_utilization(state)
 
             if (
@@ -78,9 +83,9 @@ class MarketPlanner:
                 and utilization >= self.MIN_LAND_UTILIZATION
             ):
                 target_quad = (
-                    ("NE", 1000.0, 3),
-                    ("SW", 2000.0, 6),
-                    ("SE", 4000.0, 9),
+                    ("NE", 1000.0, 10),
+                    ("SW", 2000.0, 20),
+                    ("SE", 4000.0, 20),
                 )
                 for quadrant, cost, deadline in target_quad:
                     if quadrant not in state.unlocked_quadrants and state.day >= deadline:
@@ -125,14 +130,14 @@ class MarketPlanner:
 
         if animal_count > 0:
             wheat_in_shed = int(shed.get("WHEAT", 0))
-            # Buffer 3 hari feed per animal
-            need_wheat = max(0, animal_count * 3 - wheat_in_shed)
+            # Anti-Bonkos: buffer 5 hari per animal (lebih besar karena 8-16 animal)
+            need_wheat = max(0, animal_count * 5 - wheat_in_shed)
 
             if need_wheat > 0:
                 wheat_price = state.market_prices.get("WHEAT", 30.0)
                 # Beli kalau cash cukup + buffer kecil $150
                 if state.money > wheat_price * need_wheat + 150:
-                    buy_qty = min(need_wheat, 10)  # Max 10 per turn
+                    buy_qty = min(need_wheat, 20)  # Max 20 per turn (8+ animal butuh lebih)
                     orders.append(["BUY_PRODUCT", "WHEAT", buy_qty])
                     disposable_cash -= wheat_price * buy_qty
 
@@ -165,9 +170,9 @@ class MarketPlanner:
         disposable_cash += sales_proceeds
 
         # ------------------------------------------------------------------
-        # 6. LAND fallback (jika belum dibeli di step 1)
+        # 6. LAND fallback (jika belum dibeli di step 1 dan phase mengizinkan)
         # ------------------------------------------------------------------
-        if not any(order == ["BUY_LAND"] for order in orders):
+        if not any(order == ["BUY_LAND"] for order in orders) and phase_buy_land:
             utilization = self._land_utilization(state)
             if (
                 utilization >= self.MIN_LAND_UTILIZATION

@@ -62,19 +62,20 @@ class HiringManager:
     }
 
     # ==================================================================
-    # FIX BARU: Minimum hands floor per fase — jamin coverage minimum
-    # D01-D02: 4 hand (agresif di awal, biaya murah)
-    # D03-D05: 5 hand
-    # D06-D20: 5 hand (peak)
-    # D21-D25: 4 hand (harvest tail)
-    # D26-D30: 2 hand (cleanup)
+    # ANTI-BONKOS: Hiring floor disesuaikan dengan fase strategi
+    # D00-D02: 5 hands (bootstrap, Fibonacci cost murah sekali)
+    # D03-D05: 6 hands (Wheat cycle, lebih banyak aksi watering)
+    # D06-D09: 7 hands (menjelang panen besar D10)
+    # D10-D22: 8 hands (Scale Up + Big Harvest: 50-100 tiles butuh max workers)
+    # D23-D25: 6 hands (Final Push, masih banyak yang perlu di-harvest)
+    # D26-D30: 3 hands (cleanup + liquidate)
     # ==================================================================
     MIN_HANDS_FLOOR: Dict[Tuple[int, int], int] = {
         (0, 2): 5,
         (3, 5): 6,
-        (6, 10): 7,
-        (11, 20): 8,
-        (21, 25): 6,
+        (6, 9): 7,
+        (10, 22): 8,
+        (23, 25): 6,
         (26, 30): 3,
     }
 

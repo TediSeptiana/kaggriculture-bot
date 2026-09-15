@@ -36,12 +36,12 @@ class TaskEvaluator:
         # ============================================================
         if role_type == "BUILD":
             if current_tile is None:
-                has_coop = any(
-                    isinstance(tile, dict) and tile.get("kind") == "COOP"
+                has_empty_coop = any(
+                    isinstance(tile, dict) and tile.get("kind") == "COOP" and not tile.get("animal")
                     for row in tiles for tile in row
                 )
-                has_pasture = any(
-                    isinstance(tile, dict) and tile.get("kind") == "PASTURE"
+                has_empty_pasture = any(
+                    isinstance(tile, dict) and tile.get("kind") == "PASTURE" and not tile.get("animal")
                     for row in tiles for tile in row
                 )
                 has_cow_or_sheep = (
@@ -49,9 +49,9 @@ class TaskEvaluator:
                 )
                 has_goose = state.shed.get("GOOSE", 0) > 0
 
-                if has_cow_or_sheep and not has_pasture:
+                if has_cow_or_sheep and not has_empty_pasture:
                     return ["BUILD_PASTURE"]
-                if has_goose and not has_coop:
+                if has_goose and not has_empty_coop:
                     return ["BUILD_COOP"]
                 return None
 

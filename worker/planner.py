@@ -51,12 +51,29 @@ class WorkerPlanner:
 
         if best_target and target_task:
             # ============================================================
-            # ANTI-STUCK: Jika worker sudah di target tapi tidak bisa
-            # bertindak (langkah 1 & 2 sudah gagal), JANGAN stuck di sini.
-            # Tandai target ini sebagai "tidak bisa dikerjakan sekarang"
-            # dan cari target lain.
+            # KOREKSI: Jika worker butuh item dari shed (COW/WHEAT/FERTILIZER)
+            # tapi belum bawa, JANGAN ke target asli, HARUS ke SHED dulu!
             # ============================================================
-            if best_target == unit_pos:
+            def _carried(item: str) -> bool:
+                return any(
+                    isinstance(entry, dict)
+                    and (str(entry.get("item", entry.get("name", ""))).upper() == item or int(entry.get(item, 0)) > 0)
+                    and int(entry.get("count", entry.get("quantity", entry.get(item, 1)))) > 0
+                    for entry in inventory
+                )
+
+            actual_target = best_target
+            if target_task == "PLACE" and not (_carried("COW") or _carried("SHEEP") or _carried("GOOSE")):
+                actual_target = (4, 4)
+            elif target_task == "FEED" and not _carried("WHEAT"):
+                actual_target = (4, 4)
+            elif target_task == "FERTILIZE" and not _carried("FERTILIZER"):
+                actual_target = (4, 4)
+
+            # ============================================================
+            # ANTI-STUCK: Jika worker sudah di target tapi tidak bisa bertindak.
+            # ============================================================
+            if actual_target == unit_pos:
                 # Worker sudah di posisi target tapi tidak bisa bertindak.
                 # Ini berarti is_tile_valid_for_task dan check_immediate_tile_action
                 # tidak konsisten, ATAU kondisi berubah di tengah turn.
@@ -82,7 +99,7 @@ class WorkerPlanner:
 
             assigned_targets.add(best_target)
             move_cmd = PathFinder.a_star_next_step(
-                unit_pos, best_target, occupied_tiles=other_worker_positions
+                unit_pos, actual_target, occupied_tiles=other_worker_positions
             )
             if move_cmd != "PASS":
                 return [move_cmd]
@@ -98,8 +115,16 @@ class WorkerPlanner:
             )
             if alt_target and alt_task:
                 assigned_targets.add(alt_target)
+                actual_alt_target = alt_target
+                if alt_task == "PLACE" and not (_carried("COW") or _carried("SHEEP") or _carried("GOOSE")):
+                    actual_alt_target = (4, 4)
+                elif alt_task == "FEED" and not _carried("WHEAT"):
+                    actual_alt_target = (4, 4)
+                elif alt_task == "FERTILIZE" and not _carried("FERTILIZER"):
+                    actual_alt_target = (4, 4)
+
                 alt_move = PathFinder.a_star_next_step(
-                    unit_pos, alt_target, occupied_tiles=other_worker_positions
+                    unit_pos, actual_alt_target, occupied_tiles=other_worker_positions
                 )
                 if alt_move != "PASS":
                     return [alt_move]

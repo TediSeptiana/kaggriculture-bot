@@ -19,21 +19,20 @@ class LandManager:
 
     SEASON_DAYS: int = 30
 
-    # FIX: diperketat dari 0.50 → 1.0 (NPV harus > cost)
-    SAFETY_MARGIN: float = 1.0
+    # Anti-Bonkos: lebih agresif, NPV harus > 0.5x cost
+    SAFETY_MARGIN: float = 0.5
 
-    # FIX: dinaikkan dari 0.70 → 0.85
-    MIN_UTILIZATION: float = 0.85
+    # Utilization minimum lebih rendah: beli land sebelum fully utilised
+    MIN_UTILIZATION: float = 0.70
 
-    # FIX: dinaikkan dari 500 → 1500
+    # Cash buffer lebih rendah: kita punya cash banyak post-harvest
     CASH_BUFFER: float = 150.0
 
-    # FIX: dinaikkan dari 3 → 8 hari
-    MIN_DAYS_REMAINING: int = 14
+    # Anti-Bonkos: D10 ada 20 hari tersisa, D20 ada 10 hari tersisa
+    MIN_DAYS_REMAINING: int = 8
 
-    # FIX BARU: cash minimum multiplier — cegah beli land saat cash tipis
-    # Land $2K butuh $2K * 2.5 + $1.5K buffer = $6.5K
-    MIN_CASH_MULTIPLIER: float = 2.5
+    # Anti-Bonkos: cash multiplier lebih longgar (punya 25K saat beli NE $1K)
+    MIN_CASH_MULTIPLIER: float = 1.8
 
     def _next_target_quadrant(self, state: FarmState) -> Optional[str]:
         """Determines sequential quadrant expansion target (NE -> SW -> SE)."""

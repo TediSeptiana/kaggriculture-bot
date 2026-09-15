@@ -134,19 +134,19 @@ class TaskAssigner:
             return not t.get("animal")
 
         if task_type == "BUILD":
-            # BUILD valid di tile kosong jika belum ada struktur yang dibutuhkan
+            # BUILD valid di tile kosong jika belum ada struktur yang dibutuhkan (kosong)
             if t is not None:
                 return False
-            has_coop = any(
-                isinstance(tile, dict) and tile.get("kind") == "COOP"
+            has_empty_coop = any(
+                isinstance(tile, dict) and tile.get("kind") == "COOP" and not tile.get("animal")
                 for row in tiles for tile in row
             )
-            has_pasture = any(
-                isinstance(tile, dict) and tile.get("kind") == "PASTURE"
+            has_empty_pasture = any(
+                isinstance(tile, dict) and tile.get("kind") == "PASTURE" and not tile.get("animal")
                 for row in tiles for tile in row
             )
-            needs_coop = not has_coop and state.shed.get("GOOSE", 0) > 0
-            needs_pasture = not has_pasture and (
+            needs_coop = not has_empty_coop and state.shed.get("GOOSE", 0) > 0
+            needs_pasture = not has_empty_pasture and (
                 state.shed.get("COW", 0) > 0 or state.shed.get("SHEEP", 0) > 0
             )
             return needs_coop or needs_pasture

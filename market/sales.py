@@ -30,8 +30,11 @@ class SalesManager:
         return count
 
     def _wheat_reserve(self, state: FarmState) -> int:
-        """Wheat yang harus disimpan untuk pakan (buffer 3 hari per animal)."""
+        """Wheat yang harus disimpan untuk pakan (buffer 5 hari per animal)."""
         animal_count = self._count_live_animals(state)
+        if animal_count == 0:
+            return 0  # Anti-Bonkos: jual semua Wheat jika belum ada animal (e.g. D4)
+            
         return max(
             self.WHEAT_FEED_RESERVE_MIN,
             animal_count * self.WHEAT_FEED_RESERVE_PER_ANIMAL,

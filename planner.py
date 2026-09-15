@@ -127,9 +127,9 @@ class AgentPlanner:
         has_cow_in_shed = (shed.get("COW", 0) + inv_cow) > 0
         has_sheep_in_shed = (shed.get("SHEEP", 0) + inv_sheep) > 0
 
-        need_build_coop = has_goose_in_shed and not has_coop
+        need_build_coop = has_goose_in_shed and not has_empty_coop
         need_build_pasture = (
-            (has_cow_in_shed or has_sheep_in_shed) and not has_pasture
+            (has_cow_in_shed or has_sheep_in_shed) and not has_empty_pasture
         )
         need_build = need_build_coop or need_build_pasture
 
@@ -293,12 +293,10 @@ class AgentPlanner:
 
         farmer_needs_animal = (
             self.pending_animal is not None
-            or (total_goose_pending > 0 and not has_coop)
-            or (total_goose_pending > 0 and has_empty_coop)
-            or (total_cow_pending > 0 and not has_pasture)
-            or (total_cow_pending > 0 and has_empty_pasture)
-            or (total_sheep_pending > 0 and not has_pasture)
-            or (total_sheep_pending > 0 and has_empty_pasture)
+            or (total_goose_pending > 0 and not has_empty_coop)
+            or (total_cow_pending > 0 and not has_empty_pasture)
+            or (total_sheep_pending > 0 and not has_empty_pasture)
+            or has_hungry_animal
         )
 
         if farmer_needs_animal:

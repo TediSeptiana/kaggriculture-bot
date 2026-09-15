@@ -15,13 +15,14 @@ class SeedManager:
 
     # Reserve minimum cash
     MIN_CASH_RESERVE: float = 50.0
-    # Buffer seed di atas kapasitas tile
-    SEED_BUFFER: int = 5
+    # Buffer seed di atas kapasitas tile (dinaikkan agar tidak memblokir scale-up agresif)
+    SEED_BUFFER: int = 25
     # Max beli per turn per crop
     MAX_BUY_PER_TURN: int = 20
 
     # Stop stocking seeds once the profitable melon window has closed.
-    LATE_GAME_CUTOFF: int = 19
+    # Anti-Bonkos: D20-D22 masih tanam Melon + Wheat untuk final push
+    LATE_GAME_CUTOFF: int = 23
 
     # Crop cepat untuk fallback
     FAST_CROPS = {"WHEAT", "CARROT"}
@@ -119,8 +120,9 @@ class SeedManager:
         """Generates sorted list of BUY_SEED orders based on utility scores."""
         orders: List[MarketOrder] = []
 
-        # FIX: boleh beli seed setiap turn di D00-D03 untuk agresif
-        if state.hour != 0 and state.day > 3:
+        # Anti-Bonkos: beli seed di D00-D03 setiap turn (agresif bootstrap)
+        # D10 dan D20 adalah momen scale-up besar, juga beli setiap turn
+        if state.hour != 0 and state.day > 3 and state.day not in (10, 20):
             return orders
 
         # Reserve cash dulu
@@ -141,13 +143,15 @@ class SeedManager:
         empty_tiles = self._count_empty_tiles(state)
         seeds_in_inv = sum(state.seeds.values())
 
-        # Kalau seed sudah melebihi kapasitas + buffer, JANGAN BELI
-        if seeds_in_inv >= empty_tiles + self.SEED_BUFFER:
+        # Kalau seed sudah melebihi kapasitas + buffer, JANGAN BELI (kecuali D0 untuk initial bootstrap)
+        if seeds_in_inv >= empty_tiles + self.SEED_BUFFER and state.day > 0:
             return orders
 
-        room_for_seeds = max(0, empty_tiles - seeds_in_inv)
-        if room_for_seeds <= 0:
+        room_for_seeds = max(0, empty_tiles + self.SEED_BUFFER - seeds_in_inv)
+        if room_for_seeds <= 0 and state.day > 0:
             return orders
+        elif state.day == 0:
+            room_for_seeds = 999  # Bypass capacity check on D0
 
         # FIX: late-game cutoff hanya 2 hari terakhir
         # CARROT/WHEAT masih bisa ditanam sampai D28
@@ -182,28 +186,47 @@ class SeedManager:
 
             current_count = state.seeds.get(crop_name, 0)
 
-            # Target konservatif berdasarkan crop
+            # ===== ANTI-BONKOS SEED TARGETS =====
             if crop_name == "WHEAT":
-                # FIX: WHEAT D00-D01 boost untuk feed buffer
-                if state.day <= 1:
+                # Day 0: target 10 Wheat (sesuai rencana Anti-Bonkos)
+                # Day 5+: scale berdasarkan jumlah animal untuk pakan
+                if state.day == 0:
                     target_count = 10
+                elif state.day <= 3:
+                    target_count = 10  # pertahankan buffer
                 else:
                     animal_count = self._count_animals(state)
-                    target_count = max(4, animal_count * 3) if animal_count > 0 else 4
+                    # Buffer 3 hari per animal + minimal 5
+                    target_count = max(5, animal_count * 3)
 
             elif crop_name in {"STRAWBERRY", "TOMATO"}:
+                # Anti-Bonkos: skip Strawberry & Tomato, fokus Melon
                 target_count = 0
+
+            elif crop_name == "CARROT":
+                # Anti-Bonkos: minimal Carrot, Melon jauh lebih profitable
+                # Hanya sebagai fallback jika Melon tidak bisa ditanam
+                if remaining_days >= 10:
+                    target_count = 0  # skip Carrot jika masih bisa Melon
+                else:
+                    target_count = max(3, room_for_seeds // 4)
 
             elif crop_name == "MELON":
                 if remaining_days < 10:
                     target_count = 0
                 else:
-                    # FIX: lebih agresif MELON
-                    target_count = max(8, min(15, room_for_seeds // 2))
-
-            elif crop_name == "CARROT":
-                # FIX: kurangi CARROT — MELON lebih profitable
-                target_count = max(3, room_for_seeds // 6)
+                    # Anti-Bonkos Day 0: target 15 Melon
+                    # Day 10: target 30 Melon (scale-up setelah panen besar 1)
+                    # Day 20: target 20 Melon (BIG_HARVEST + animal phase)
+                    if state.day == 0:
+                        target_count = 15
+                    elif state.day == 10:
+                        target_count = 30
+                    elif state.day == 20:
+                        target_count = 20
+                    else:
+                        # Di antara milestone: isi sampai 2/3 kapasitas tile
+                        target_count = max(8, min(30, room_for_seeds * 2 // 3))
 
             else:
                 target_count = max(5, room_for_seeds // 5)

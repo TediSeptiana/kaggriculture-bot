@@ -14,30 +14,34 @@ class AnimalManager:
     ANIMAL_COST: Dict[str, int] = {"GOOSE": 300, "COW": 400, "SHEEP": 500}
 
     # ============================================================
-    # FASE B: Fokus Cow + Sheep (bukan Goose)
-    # Target: 3 Cow + 2 Sheep = 5 animal
+    # ANTI-BONKOS: Agresif Cow + Sheep untuk Susu & Wol di akhir musim
+    # Target: 8 Cow (Susu) + 8 Sheep (Wol) = 16 animal total
+    # Cow start D5 (setelah Wheat harvest D4 untuk pakan buffer)
+    # Sheep start D8 (setelah Wheat harvest D8 untuk pakan buffer)
     # ============================================================
     TARGETS: Dict[str, int] = {
         "GOOSE": 0,
-        "COW": 4,
-        "SHEEP": 3,
+        "COW": 8,
+        "SHEEP": 8,
     }
 
-    # Mulai D5 (setelah cash flow stabil), bukan D0
+    # Cow mulai D5 (ada panen Wheat di D4 untuk pakan)
     GOOSE_START_DAY: int = 3
     GOOSE_END_DAY: int = 12
-    COW_START_DAY: int = 0
-    COW_END_DAY: int = 12
-    SHEEP_START_DAY: int = 5
-    SHEEP_END_DAY: int = 14
+    COW_START_DAY: int = 5
+    COW_END_DAY: int = 22
+    SHEEP_START_DAY: int = 8
+    SHEEP_END_DAY: int = 22
 
-    # Reserve cash minimum agresif di awal
-    MIN_CASH_RESERVE: float = 100.0
+    # Reserve cash minimum — lebih longgar karena di D5+ sudah ada cash flow
+    MIN_CASH_RESERVE: float = 150.0
 
     # Minimal hari tersisa agar animal balik modal
+    # Cow: yield susu mulai D1 setelah placed. 8 hari untuk 8 cow = cukup
+    # Sheep: yield wol tiap 3 hari. Minimal 7 hari untuk 1-2 yield
     MIN_DAYS_TO_RECOVER_GOOSE: int = 10
-    MIN_DAYS_TO_RECOVER_COW: int = 12
-    MIN_DAYS_TO_RECOVER_SHEEP: int = 10
+    MIN_DAYS_TO_RECOVER_COW: int = 7
+    MIN_DAYS_TO_RECOVER_SHEEP: int = 7
 
     def __init__(self, enabled: bool = True) -> None:
         self.enabled = enabled
@@ -119,9 +123,6 @@ class AnimalManager:
             if isinstance(t, dict) and t.get("animal") == "COW"
         )
 
-        # Cek apakah butuh pasture baru
-        has_place_for_cow = empty_pastures > 0 or total_pastures == 0
-
         # Berapa banyak cow yang perlu dibeli berdasarkan total
         cows_needed = self.TARGETS["COW"] - cow_total
 
@@ -129,7 +130,6 @@ class AnimalManager:
             self.COW_START_DAY <= day <= self.COW_END_DAY
             and cow_in_shed == 0  # jangan numpuk di shed
             and cows_needed > 0
-            and has_place_for_cow
             and days_left >= self.MIN_DAYS_TO_RECOVER_COW
             and money >= cow_cost + self.MIN_CASH_RESERVE
             and disposable_cash >= cow_cost
@@ -159,7 +159,6 @@ class AnimalManager:
             self.SHEEP_START_DAY <= day <= self.SHEEP_END_DAY
             and sheep_in_shed == 0
             and sheeps_needed > 0
-            and has_place_for_sheep
             and days_left >= self.MIN_DAYS_TO_RECOVER_SHEEP
             and money >= sheep_cost + self.MIN_CASH_RESERVE
             and disposable_cash >= sheep_cost
